@@ -112,6 +112,14 @@ MODULE_MAP.update({'DeepseekV2ForCausalLM': f'{LMDEPLOY_PYTORCH_MODEL_PATH}.deep
 # deepseek-v3
 MODULE_MAP.update({'DeepseekV3ForCausalLM': f'{LMDEPLOY_PYTORCH_MODEL_PATH}.deepseek_v2.DeepseekV2ForCausalLM'})
 
+# kimi-k2.5/k2.6
+MODULE_MAP.update({
+    'KimiK25ForConditionalGeneration':
+    f'{LMDEPLOY_PYTORCH_MODEL_PATH}.kimi_k25.KimiK25ForConditionalGeneration',
+    'Kimi_K25ForConditionalGeneration':
+    f'{LMDEPLOY_PYTORCH_MODEL_PATH}.kimi_k25.KimiK25ForConditionalGeneration',
+})
+
 # deepseek-v32
 MODULE_MAP.update({'DeepseekV32ForCausalLM': f'{LMDEPLOY_PYTORCH_MODEL_PATH}.deepseek_v32.DeepseekV32ForCausalLM'})
 
