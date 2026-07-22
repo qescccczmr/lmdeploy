@@ -9,6 +9,7 @@ from transformers.configuration_utils import PretrainedConfig
 from lmdeploy.pytorch.model_inputs import StepContext, StepContextManager
 
 from .deepseek_v2 import DeepseekV2ForCausalLM
+from .patch import get_build_model_context
 from .utils.cudagraph import CudaGraphMixin
 from .utils.model import DeployModelMixin
 
@@ -29,7 +30,7 @@ class _UnsupportedMultimodalModule(nn.Module):
 class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixin):
     """Text-only Kimi-K2.5/K2.6 wrapper backed by the DeepSeek-V3 model.
 
-    M2 intentionally exposes only the language path. The dummy vision modules
+    The current milestones expose only the language path. The dummy vision modules
     make the weight loader skip their checkpoint prefixes, while multimodal
     requests fail explicitly until the vision milestone is implemented.
     """
@@ -63,21 +64,36 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
             raise ValueError('KimiK25 config must define `text_config`.')
 
         quant_config = getattr(config.text_config, 'quantization_config', None)
+        outer_quant_config = getattr(config, 'quantization_config', None)
         if quant_config is None:
-            quant_config = getattr(config, 'quantization_config', None)
+            quant_config = outer_quant_config
         if isinstance(quant_config, Mapping):
             quant_method = quant_config.get('quant_method')
         else:
             quant_method = getattr(quant_config, 'quant_method', None)
         if quant_method == 'compressed-tensors':
-            raise NotImplementedError(
-                'Kimi-K2.6 compressed-tensors execution is introduced in M3; M2 accepts only BF16 fixtures.')
+            if getattr(config.text_config, 'quantization_config', None) is None:
+                raise RuntimeError(
+                    'Kimi-K2.6 compressed-tensors metadata must be defined on `text_config`; '
+                    'outer-only metadata cannot drive routed-expert dispatch safely.')
+            build_quant_config = get_build_model_context().quant_config
+            if (build_quant_config is None or build_quant_config.quant_method != 'compressed-tensors'
+                    or build_quant_config.compressed_tensors_config is None):
+                raise RuntimeError(
+                    'Kimi-K2.6 compressed-tensors construction requires the validated ModelConfig quantization '
+                    'metadata in BuildModelContext.')
 
         self.config = config
         self.ctx_mgr = ctx_mgr
         self.vision_tower = _UnsupportedMultimodalModule('vision tower')
         self.mm_projector = _UnsupportedMultimodalModule('multimodal projector')
-        self.language_model = DeepseekV2ForCausalLM(config.text_config, ctx_mgr, dtype=dtype, device=device)
+        self.language_model = DeepseekV2ForCausalLM(
+            config.text_config,
+            ctx_mgr,
+            dtype=dtype,
+            device=device,
+            prefix='language_model',
+        )
 
     @staticmethod
     def _raise_for_multimodal_context(context: StepContext):
@@ -138,7 +154,7 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
         )
 
     def support_cuda_graph(self, *args, **kwargs):
-        """CUDA Graph qualification is intentionally deferred past M2."""
+        """The current text-only compatibility path does not support CUDA Graph."""
         return False
 
     @classmethod

@@ -117,6 +117,40 @@ class FusedMoEW8A8Builder(ABC):
         raise NotImplementedError
 
 
+class FusedMoEW4A16Impl(ABC):
+    """Compressed-tensors fused MoE W4A16 implementation."""
+
+    @abstractmethod
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.LongTensor,
+        gate_up_packed: torch.Tensor,
+        gate_up_scale: torch.Tensor,
+        down_packed: torch.Tensor,
+        down_scale: torch.Tensor,
+    ):
+        """Run eager routed experts from packed INT4 weights."""
+        raise NotImplementedError
+
+
+class FusedMoEW4A16Builder(ABC):
+    """Compressed-tensors fused MoE W4A16 builder."""
+
+    @staticmethod
+    @abstractmethod
+    def build(
+        top_k: int,
+        num_experts: int,
+        renormalize: bool = False,
+        num_bits: int = 4,
+        group_size: int = 32,
+    ):
+        """Build the eager W4A16 implementation."""
+        raise NotImplementedError
+
+
 class FusedMoEBlockedF8Impl(ABC):
     """Fused moe blocked f8 implementation."""
 

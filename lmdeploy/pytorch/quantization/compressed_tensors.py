@@ -1,18 +1,22 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-"""Metadata support for pack-quantized compressed-tensors checkpoints.
+"""Validation and reference helpers for compressed-tensors checkpoints.
 
-This module deliberately stops at configuration and checkpoint inspection. It
-does not register a PyTorch execution backend or load packed weights.
+Production execution stays in the PyTorch backend and reads the packed layout
+directly. The unpack/dequantize functions here are correctness oracles for
+small fixtures and must not materialize every expert in a real model.
 """
 
 import hashlib
 import json
+import math
 import os.path as osp
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+import torch
 
 
 _QUANT_SUFFIXES = ('.weight_packed', '.weight_scale', '.weight_shape')
@@ -201,6 +205,152 @@ class CompressedTensorsW4A16Config:
         """Return whether a Linear FQN is a routed expert projection."""
         pattern = r'(^|\.)mlp\.experts\.\d+\.(gate_proj|up_proj|down_proj)$'
         return re.search(pattern, module_fqn) is not None
+
+
+@dataclass(frozen=True)
+class CompressedTensorsW4A16Shard:
+    """One TP-local view of a logical compressed-tensors weight."""
+
+    logical_shape: tuple[int, int]
+    weight_packed: torch.Tensor
+    weight_scale: torch.Tensor
+
+
+def _normalize_logical_shape(logical_shape: torch.Tensor | tuple[int, int]) -> tuple[int, int]:
+    if isinstance(logical_shape, torch.Tensor):
+        if logical_shape.dtype != torch.int32 or logical_shape.shape != (2, ):
+            raise ValueError('logical_shape tensor must have dtype int32 and shape [2]')
+        logical_shape = tuple(int(dim) for dim in logical_shape.tolist())
+    elif isinstance(logical_shape, (list, tuple)):
+        logical_shape = tuple(logical_shape)
+    else:
+        raise TypeError('logical_shape must be an int32 tensor or a two-element sequence')
+
+    if (len(logical_shape) != 2
+            or not all(isinstance(dim, int) and not isinstance(dim, bool) and dim > 0 for dim in logical_shape)):
+        raise ValueError('logical_shape must contain two positive integers')
+    return logical_shape
+
+
+def _validate_w4a16_runtime_layout(
+    weight_packed: torch.Tensor,
+    weight_scale: torch.Tensor,
+    logical_shape: torch.Tensor | tuple[int, int],
+    config: CompressedTensorsW4A16Config,
+) -> tuple[int, int]:
+    if not isinstance(config, CompressedTensorsW4A16Config):
+        raise TypeError('config must be a CompressedTensorsW4A16Config')
+    if weight_packed.dtype != torch.int32:
+        raise ValueError(f'weight_packed must use int32 storage, got {weight_packed.dtype}')
+    if weight_scale.dtype != torch.bfloat16:
+        raise ValueError(f'weight_scale must use bfloat16, got {weight_scale.dtype}')
+
+    logical_shape = _normalize_logical_shape(logical_shape)
+    out_features, in_features = logical_shape
+    pack_factor = 32 // config.num_bits
+    expected_packed_shape = (out_features, math.ceil(in_features / pack_factor))
+    expected_scale_shape = (out_features, math.ceil(in_features / config.group_size))
+    if tuple(weight_packed.shape) != expected_packed_shape:
+        raise ValueError(
+            f'weight_packed shape mismatch: expected {expected_packed_shape}, got {tuple(weight_packed.shape)}')
+    if tuple(weight_scale.shape) != expected_scale_shape:
+        raise ValueError(
+            f'weight_scale shape mismatch: expected {expected_scale_shape}, got {tuple(weight_scale.shape)}')
+    if weight_packed.device != weight_scale.device:
+        raise ValueError('weight_packed and weight_scale must be on the same device')
+    return logical_shape
+
+
+def unpack_compressed_tensors_w4a16(
+    weight_packed: torch.Tensor,
+    weight_scale: torch.Tensor,
+    logical_shape: torch.Tensor | tuple[int, int],
+    config: CompressedTensorsW4A16Config,
+) -> torch.Tensor:
+    """Unpack pack-quantized INT4 codes into signed int8 reference values.
+
+    compressed-tensors stores ``q + 8`` in little-nibble order along K: q0
+    occupies bits 0..3 and q7 occupies bits 28..31 of each int32 word.
+    This function is a correctness oracle and must not be used to materialize
+    every expert of a production checkpoint.
+    """
+    _, in_features = _validate_w4a16_runtime_layout(weight_packed, weight_scale, logical_shape, config)
+    pack_factor = 32 // config.num_bits
+    shifts = torch.arange(pack_factor, dtype=torch.int32, device=weight_packed.device) * config.num_bits
+    mask = (1 << config.num_bits) - 1
+    unsigned_codes = (weight_packed.unsqueeze(-1) >> shifts) & mask
+    unsigned_codes = unsigned_codes.flatten(-2)[..., :in_features]
+    signed_offset = 1 << (config.num_bits - 1)
+    return (unsigned_codes - signed_offset).to(torch.int8)
+
+
+def dequantize_compressed_tensors_w4a16(
+    weight_packed: torch.Tensor,
+    weight_scale: torch.Tensor,
+    logical_shape: torch.Tensor | tuple[int, int],
+    config: CompressedTensorsW4A16Config,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Explicitly dequantize one W4A16 weight for tests and tiny fixtures."""
+    if not isinstance(dtype, torch.dtype) or not dtype.is_floating_point:
+        raise TypeError('reference dequantization dtype must be a floating-point torch.dtype')
+    logical_shape = _validate_w4a16_runtime_layout(weight_packed, weight_scale, logical_shape, config)
+    signed_codes = unpack_compressed_tensors_w4a16(weight_packed, weight_scale, logical_shape, config)
+    in_features = logical_shape[1]
+    expanded_scale = weight_scale.repeat_interleave(config.group_size, dim=-1)[..., :in_features]
+    return signed_codes.to(dtype) * expanded_scale.to(dtype)
+
+
+def shard_compressed_tensors_w4a16(
+    weight_packed: torch.Tensor,
+    weight_scale: torch.Tensor,
+    logical_shape: torch.Tensor | tuple[int, int],
+    config: CompressedTensorsW4A16Config,
+    world_size: int,
+    rank: int,
+    colwise: bool,
+) -> CompressedTensorsW4A16Shard:
+    """Return an exact TP shard without unpacking the INT4 payload.
+
+    Column parallelism slices logical N. Row parallelism slices logical K and
+    therefore requires every local K range to preserve both int32 pack and
+    quantization-group boundaries.
+    """
+    logical_shape = _validate_w4a16_runtime_layout(weight_packed, weight_scale, logical_shape, config)
+    if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size <= 0:
+        raise ValueError('world_size must be a positive integer')
+    if not isinstance(rank, int) or isinstance(rank, bool) or not 0 <= rank < world_size:
+        raise ValueError(f'rank must be in [0, {world_size}), got {rank!r}')
+
+    out_features, in_features = logical_shape
+    pack_factor = 32 // config.num_bits
+    if colwise:
+        if out_features % world_size != 0:
+            raise ValueError(f'logical N={out_features} is not divisible by TP world_size={world_size}')
+        local_out = out_features // world_size
+        start = rank * local_out
+        packed_shard = weight_packed.narrow(0, start, local_out).contiguous()
+        scale_shard = weight_scale.narrow(0, start, local_out).contiguous()
+        local_shape = (local_out, in_features)
+    else:
+        if in_features % world_size != 0:
+            raise ValueError(f'logical K={in_features} is not divisible by TP world_size={world_size}')
+        local_in = in_features // world_size
+        if local_in % pack_factor != 0:
+            raise ValueError(f'TP-local K={local_in} splits an INT4 storage word of {pack_factor} values')
+        if local_in % config.group_size != 0:
+            raise ValueError(f'TP-local K={local_in} splits a quantization group of {config.group_size} values')
+        packed_per_rank = local_in // pack_factor
+        scales_per_rank = local_in // config.group_size
+        packed_shard = weight_packed.narrow(1, rank * packed_per_rank, packed_per_rank).contiguous()
+        scale_shard = weight_scale.narrow(1, rank * scales_per_rank, scales_per_rank).contiguous()
+        local_shape = (out_features, local_in)
+
+    return CompressedTensorsW4A16Shard(
+        logical_shape=local_shape,
+        weight_packed=packed_shard,
+        weight_scale=scale_shard,
+    )
 
 
 @dataclass(frozen=True)

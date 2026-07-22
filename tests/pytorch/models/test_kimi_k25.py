@@ -6,7 +6,7 @@ import torch
 from safetensors.torch import save_file
 from torch import nn
 
-from lmdeploy.pytorch.config import CacheConfig, DistConfig, ModelConfig
+from lmdeploy.pytorch.config import CacheConfig, DistConfig, ModelConfig, QuantizationConfig
 from lmdeploy.pytorch.devices import DeviceContext, get_device_manager
 from lmdeploy.pytorch.distributed import DistContext, get_dist_manager
 from lmdeploy.pytorch.engine.cache_engine import CacheEngine
@@ -15,17 +15,19 @@ from lmdeploy.pytorch.models.deepseek_v2 import DeepseekV2MLP, DeepseekV2MoE
 from lmdeploy.pytorch.models.kimi_k25 import KimiK25ForConditionalGeneration
 from lmdeploy.pytorch.models.module_map import MODULE_MAP
 from lmdeploy.pytorch.models.patch import _class_from_qualname, _get_model_class, build_patched_model
+from lmdeploy.pytorch.nn.moe.compressed_tensors import FusedMoEW4A16
 from lmdeploy.pytorch.weight_loader.model_weight_loader import ModelWeightLoader
 
 
 class _TinyLanguageModel(nn.Module):
 
-    def __init__(self, config, ctx_mgr, dtype=None, device=None):
+    def __init__(self, config, ctx_mgr, dtype=None, device=None, prefix=''):
         super().__init__()
         self.config = config
         self.ctx_mgr = ctx_mgr
         self.received_dtype = dtype
         self.received_device = device
+        self.received_prefix = prefix
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, dtype=dtype, device=device)
         self.loaded_weights = None
         self.last_forward = None
@@ -115,6 +117,7 @@ def test_wrapper_delegates_tiny_bf16_prefill_and_decode(tiny_model):
     assert tiny_model.language_model.ctx_mgr is tiny_model.ctx_mgr
     assert tiny_model.language_model.received_dtype == torch.bfloat16
     assert tiny_model.language_model.received_device == torch.device('cpu')
+    assert tiny_model.language_model.received_prefix == 'language_model'
     assert tiny_model.get_input_embeddings() is tiny_model.language_model.embed_tokens
     assert tiny_model.vision_tower._is_dummy_mod
     assert tiny_model.mm_projector._is_dummy_mod
@@ -208,7 +211,7 @@ def test_weight_loader_rejects_unknown_top_level_prefix(tiny_model):
 
 
 @pytest.mark.parametrize('config_owner', ['outer', 'text'])
-def test_m2_rejects_compressed_tensors_before_backbone_construction(monkeypatch, config_owner):
+def test_compressed_tensors_requires_validated_build_context(monkeypatch, config_owner):
     import lmdeploy.pytorch.models.kimi_k25 as kimi_k25
 
     def fail_if_constructed(*args, **kwargs):
@@ -219,7 +222,27 @@ def test_m2_rejects_compressed_tensors_before_backbone_construction(monkeypatch,
     owner = config if config_owner == 'outer' else config.text_config
     owner.quantization_config = {'quant_method': 'compressed-tensors'}
 
-    with pytest.raises(NotImplementedError, match='introduced in M3'):
+    error = 'must be defined on `text_config`' if config_owner == 'outer' else 'validated ModelConfig'
+    with pytest.raises(RuntimeError, match=error):
+        KimiK25ForConditionalGeneration(config, StepContextManager())
+
+
+def test_outer_only_compressed_tensors_metadata_fails_before_bf16_dispatch(monkeypatch):
+    import lmdeploy.pytorch.models.kimi_k25 as kimi_k25
+
+    def fail_if_constructed(*args, **kwargs):
+        raise AssertionError('outer-only metadata must not silently construct BF16 routed experts')
+
+    validated = SimpleNamespace(
+        quant_method='compressed-tensors',
+        compressed_tensors_config=object(),
+    )
+    monkeypatch.setattr(kimi_k25, 'DeepseekV2ForCausalLM', fail_if_constructed)
+    monkeypatch.setattr(kimi_k25, 'get_build_model_context', lambda: SimpleNamespace(quant_config=validated))
+    config = _make_config()
+    config.quantization_config = {'quant_method': 'compressed-tensors'}
+
+    with pytest.raises(RuntimeError, match='must be defined on `text_config`'):
         KimiK25ForConditionalGeneration(config, StepContextManager())
 
 
@@ -243,7 +266,7 @@ def test_text_wrapper_fails_closed_for_multimodal_inputs(tiny_model):
         )
 
 
-def test_m2_does_not_claim_cuda_graph_support(tiny_model):
+def test_text_wrapper_does_not_claim_cuda_graph_support(tiny_model):
     assert tiny_model.support_cuda_graph() is False
 
 
@@ -292,6 +315,71 @@ def _make_actual_tiny_config():
         dtype='bfloat16',
         text_config=text_config,
     )
+
+
+def _make_compressed_tensors_quant_config():
+    return {
+        'config_groups': {
+            'group_0': {
+                'input_activations': None,
+                'output_activations': None,
+                'targets': ['Linear'],
+                'weights': {
+                    'actorder': None,
+                    'block_structure': None,
+                    'dynamic': False,
+                    'group_size': 32,
+                    'num_bits': 4,
+                    'observer': 'minmax',
+                    'observer_kwargs': {},
+                    'strategy': 'group',
+                    'symmetric': True,
+                    'type': 'int',
+                },
+            },
+        },
+        'format': 'pack-quantized',
+        'ignore': [
+            're:.*self_attn.*',
+            're:.*shared_experts.*',
+            r're:.*mlp\.(gate|up|gate_up|down)_proj.*',
+            're:.*lm_head.*',
+            're:vision_tower.*',
+            're:mm_projector.*',
+        ],
+        'kv_cache_scheme': None,
+        'quant_method': 'compressed-tensors',
+        'quantization_status': 'compressed',
+    }
+
+
+def _pack_offset_binary_int4(codes):
+    assert codes.dtype == torch.int32
+    assert codes.shape[-1] % 8 == 0
+    unsigned = (codes + 8).to(torch.int64).unflatten(-1, (-1, 8))
+    shifts = torch.arange(8, dtype=torch.int64) * 4
+    return torch.sum(unsigned << shifts, dim=-1).to(torch.int32)
+
+
+def _iter_tiny_compressed_expert_weights(config, seed=17):
+    generator = torch.Generator().manual_seed(seed)
+    hidden_dim = config.hidden_size
+    ffn_dim = config.moe_intermediate_size
+    layer_idx = config.first_k_dense_replace
+    for expert_id in range(config.n_routed_experts):
+        for projection in ('gate_proj', 'up_proj', 'down_proj'):
+            logical_shape = (ffn_dim, hidden_dim) if projection != 'down_proj' else (hidden_dim, ffn_dim)
+            quant_codes = torch.randint(-8, 8, logical_shape, dtype=torch.int32, generator=generator)
+            scales = torch.rand(
+                (logical_shape[0], logical_shape[1] // 32),
+                dtype=torch.float32,
+                generator=generator,
+            ).to(torch.bfloat16)
+            scales = scales * 0.01 + 0.001
+            prefix = f'language_model.model.layers.{layer_idx}.mlp.experts.{expert_id}.{projection}'
+            yield f'{prefix}.weight_packed', _pack_offset_binary_int4(quant_codes)
+            yield f'{prefix}.weight_scale', scales
+            yield f'{prefix}.weight_shape', torch.tensor(logical_shape, dtype=torch.int32)
 
 
 def _make_actual_model_inputs(input_ids, history_length, is_decoding):
@@ -402,3 +490,91 @@ def test_actual_tiny_deepseek_bf16_prefill_decode_cuda(monkeypatch):
             assert torch.count_nonzero(prefix) > 0
             torch.testing.assert_close(layer_cache[0][0, :4], prefix, rtol=0, atol=0)
             assert torch.count_nonzero(layer_cache[0][0, 4]) > 0
+
+
+@pytest.mark.skipif(not _cuda_bf16_available(), reason='A CUDA device with BF16 support is required')
+def test_actual_tiny_kimi_compressed_tensors_prefill_decode_cuda(monkeypatch):
+    import lmdeploy.pytorch.backends.cuda.attention as cuda_attention
+    import lmdeploy.pytorch.configurations.deepseek_v2 as deepseek_v2_config
+
+    monkeypatch.setattr(cuda_attention, '_enable_fa3', lambda *args, **kwargs: False)
+    monkeypatch.setattr(deepseek_v2_config, 'flash_mla_available', lambda: False)
+    hf_config = _make_actual_tiny_config()
+    hf_config.text_config.quantization_config = _make_compressed_tensors_quant_config()
+    dist_config = DistConfig(tp=1)
+    device_context = DeviceContext(device_type='cuda')
+    dist_context = DistContext.build(dist_config=dist_config)
+
+    with get_device_manager().context(device_context), get_dist_manager().context(dist_context):
+        model_config = ModelConfig.from_hf_config(
+            hf_config,
+            dtype='bfloat16',
+            dist_config=dist_config,
+            device_type='cuda',
+        )
+        model_config.quant_config = QuantizationConfig.from_config(hf_config)
+        model_config.block_size = 16
+        build_context = BuildModelContext(
+            language_model_only=True,
+            quant_config=model_config.quant_config,
+        )
+        model = build_patched_model(model_config, device=torch.device('cuda'), build_model_ctx=build_context)
+        experts = model.language_model.model.layers[1].mlp.experts
+        assert isinstance(experts, FusedMoEW4A16)
+        assert experts.gate_up.weight_packed.shape == (4, 128, 16)
+        assert experts.gate_up.weight_scale.shape == (4, 128, 4)
+        assert experts.down.weight_packed.shape == (4, 128, 8)
+        assert experts.down.weight_scale.shape == (4, 128, 2)
+        assert not hasattr(experts.gate_up, 'weight')
+        assert not hasattr(experts.down, 'weight')
+
+        with torch.inference_mode():
+            for parameter in model.parameters():
+                if parameter.is_floating_point():
+                    parameter.uniform_(-0.02, 0.02)
+            model.load_weights(_iter_tiny_compressed_expert_weights(hf_config.text_config))
+            for module in list(model.modules()):
+                update_weights = getattr(module, 'update_weights', None)
+                if update_weights is not None:
+                    update_weights()
+
+        cache_config = CacheConfig(
+            max_batches=1,
+            block_size=16,
+            num_cpu_blocks=0,
+            num_gpu_blocks=1,
+            kernel_block_size=16,
+            device_type='cuda',
+        )
+        _cache_pool, cache_tensors = CacheEngine.allocate_caches(
+            1,
+            model_config,
+            cache_config,
+            world_size=1,
+            device='cuda',
+        )
+        kv_caches = list(zip(*cache_tensors))
+
+        def run_step(model_inputs):
+            context = model.ctx_mgr.build_context(model_inputs, model_config, cache_config, kv_caches=kv_caches)
+            with torch.inference_mode(), model.ctx_mgr.context(context):
+                prepared = model.prepare_inputs_for_generation(kv_caches, context=context)
+                hidden_states = model(**prepared)
+                logits = model.get_logits(hidden_states)
+            return context, hidden_states, logits
+
+        prefill_inputs = _make_actual_model_inputs(torch.tensor([[1, 2, 3, 4]], device='cuda'), 0, False)
+        with step_ctx_manager(model.ctx_mgr):
+            prefill_context, prefill_hidden, prefill_logits = run_step(prefill_inputs)
+            decode_inputs = _make_actual_model_inputs(torch.tensor([[5]], device='cuda'), 4, True)
+            decode_context, decode_hidden, decode_logits = run_step(decode_inputs)
+
+        assert prefill_context.position_ids.tolist() == [[0, 1, 2, 3]]
+        assert decode_context.position_ids.tolist() == [[4]]
+        assert prefill_hidden.shape == (1, 4, 128)
+        assert decode_hidden.shape == (1, 1, 128)
+        assert prefill_logits.shape == (1, 4, 64)
+        assert decode_logits.shape == (1, 1, 64)
+        assert prefill_hidden.dtype == decode_hidden.dtype == torch.bfloat16
+        assert torch.isfinite(prefill_logits).all()
+        assert torch.isfinite(decode_logits).all()
