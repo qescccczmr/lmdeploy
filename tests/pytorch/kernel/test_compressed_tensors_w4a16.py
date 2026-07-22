@@ -291,6 +291,99 @@ def test_direct_packed_w4a16_skewed_distinct_routes_and_down_reindex(top_k):
     assert cosine >= 0.9999
 
 
+@torch.inference_mode()
+def test_direct_packed_w4a16_compacts_sparse_kimi_scale_routes():
+    from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import (
+        _should_use_compact_w4a16, _w4a16_block_m, fused_moe_w4a16)
+    from lmdeploy.pytorch.kernels.cuda.fused_moe import _get_sorted_idx_blocks
+
+    torch.manual_seed(13)
+    device = torch.device('cuda')
+    num_experts, num_tokens, top_k = 384, 65, 2
+    hidden_dim = ffn_dim = 64
+
+    gate_up_qweight = torch.randint(-8,
+                                    8, (num_experts, 2 * ffn_dim, hidden_dim),
+                                    dtype=torch.int32,
+                                    device=device)
+    gate_up_scale = (
+        torch.rand(num_experts, 2 * ffn_dim, hidden_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    down_qweight = torch.randint(-8,
+                                 8, (num_experts, hidden_dim, ffn_dim),
+                                 dtype=torch.int32,
+                                 device=device)
+    down_scale = (
+        torch.rand(num_experts, hidden_dim, ffn_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    hidden_states = torch.randn(num_tokens,
+                                hidden_dim,
+                                dtype=torch.bfloat16,
+                                device=device)
+    # Model the sparse routing pattern of Kimi's 384 experts: only two experts
+    # are active, including the highest legal expert id.
+    topk_ids = torch.tensor([0, num_experts - 1],
+                            dtype=torch.int64,
+                            device=device).expand(num_tokens, -1).contiguous()
+    topk_weights = torch.rand(num_tokens,
+                              top_k,
+                              dtype=torch.float32,
+                              device=device)
+    topk_weights /= topk_weights.sum(dim=-1, keepdim=True)
+
+    output = fused_moe_w4a16(
+        hidden_states,
+        _pack_int4(gate_up_qweight),
+        gate_up_scale,
+        _pack_int4(down_qweight),
+        down_scale,
+        topk_weights,
+        topk_ids,
+        topk=top_k,
+    )
+
+    gate_up_weight = _dequantize(gate_up_qweight, gate_up_scale)
+    down_weight = _dequantize(down_qweight, down_scale)
+    reference = torch.zeros_like(hidden_states)
+    for route_idx, expert_id in enumerate((0, num_experts - 1)):
+        gate_up = hidden_states @ gate_up_weight[expert_id].T
+        gate, up = gate_up.chunk(2, dim=-1)
+        expert_output = (F.silu(gate) * up) @ down_weight[expert_id].T
+        reference += expert_output * topk_weights[:, route_idx, None]
+
+    nrmse, cosine = _quality(output, reference)
+    assert nrmse <= 1e-2
+    assert cosine >= 0.9999
+
+    block_m = _w4a16_block_m(num_tokens)
+    (_, _, _, block_end, block_expert_ids,
+     block_offsets) = _get_sorted_idx_blocks(topk_ids, num_experts,
+                                             num_experts, 0, block_m)
+    expected_blocks_per_active_expert = (num_tokens + block_m - 1) // block_m
+    actual_blocks = int(block_end[-1].item())
+    assert actual_blocks == 2 * expected_blocks_per_active_expert
+    assert block_expert_ids[:actual_blocks].tolist() == (
+        [0] * expected_blocks_per_active_expert +
+        [num_experts - 1] * expected_blocks_per_active_expert)
+    expected_offsets = (list(range(0, num_tokens, block_m)) +
+                        list(range(num_tokens, 2 * num_tokens, block_m)))
+    assert block_offsets[:actual_blocks].tolist() == expected_offsets
+
+    # For the M4 8K/top-8 target, launch capacity is route-proportional and is
+    # over 40x smaller than the old experts-by-global-M grid.
+    long_tokens, long_top_k = 8192, 8
+    long_block_m = _w4a16_block_m(long_tokens)
+    origin_blocks = num_experts * (
+        (long_tokens + long_block_m - 1) // long_block_m)
+    compact_capacity = (
+        (long_tokens * long_top_k + long_block_m - 1) // long_block_m +
+        num_experts)
+    assert origin_blocks >= 40 * compact_capacity
+    assert _should_use_compact_w4a16(long_tokens, long_tokens * long_top_k,
+                                     num_experts)
+    assert not _should_use_compact_w4a16(1, long_top_k, num_experts)
+
+
 def test_direct_packed_w4a16_rejects_incompatible_layout():
     from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import fused_moe_w4a16_kernel_launcher
 

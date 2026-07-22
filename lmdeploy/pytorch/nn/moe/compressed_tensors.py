@@ -227,7 +227,7 @@ class CompressedTensorsMoEWeights(nn.Module):
             raise RuntimeError(
                 f'Internal TP shard shape mismatch: source={tuple(local_weight.shape)}, '
                 f'destination={tuple(destination.shape)}')
-        destination.copy_(local_weight.to(device=destination.device))
+        destination.copy_(local_weight)
         self._loaded_parts.add(key)
 
     def validate_complete(self):

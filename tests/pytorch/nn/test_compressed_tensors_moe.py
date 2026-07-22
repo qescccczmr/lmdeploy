@@ -43,7 +43,11 @@ def _projection_parts(shard_id, offset=0):
     }
 
 
-def _make_weights(monkeypatch, rank, weight_type, num_experts=1):
+def _make_weights(monkeypatch,
+                  rank,
+                  weight_type,
+                  num_experts=1,
+                  device=torch.device('cpu')):
     monkeypatch.setattr(ct_moe, 'get_tp_world_rank', lambda group: (_TP, rank))
     return CompressedTensorsMoEWeights(
         num_experts=num_experts,
@@ -52,7 +56,7 @@ def _make_weights(monkeypatch, rank, weight_type, num_experts=1):
         weight_type=weight_type,
         num_bits=4,
         group_size=32,
-        device=torch.device('cpu'),
+        device=device,
     )
 
 
@@ -112,6 +116,44 @@ def test_down_loader_takes_exact_tp8_input_shards(monkeypatch, rank):
         weights.weight_shape[0],
         torch.tensor([_HIDDEN_DIM, local_ffn], dtype=torch.int32),
     )
+    weights.validate_complete()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
+@pytest.mark.parametrize('weight_type,shards', [
+    ('gate_up', ('gate', 'up')),
+    ('down', ('down', )),
+])
+def test_loader_copies_cpu_tp_shards_directly_to_cuda(monkeypatch, weight_type,
+                                                      shards):
+    """Cover pageable CPU checkpoint views, including non-contiguous down K."""
+    rank = 3
+    weights = _make_weights(monkeypatch,
+                            rank,
+                            weight_type,
+                            device=torch.device('cuda'))
+    parts_by_shard = {}
+    for index, shard_id in enumerate(shards):
+        parts = _projection_parts(shard_id, offset=index * 10000)
+        parts_by_shard[shard_id] = parts
+        for part, value in parts.items():
+            _load_part(weights, 0, shard_id, part, value)
+
+    local_ffn = _FFN_DIM // _TP
+    if weight_type == 'gate_up':
+        row_slice = slice(rank * local_ffn, (rank + 1) * local_ffn)
+        expected_packed = torch.cat([
+            parts_by_shard[shard]['weight_packed'][row_slice]
+            for shard in shards
+        ])
+        assert torch.equal(weights.weight_packed[0].cpu(), expected_packed)
+    else:
+        packed_width = local_ffn // 8
+        packed_slice = slice(rank * packed_width, (rank + 1) * packed_width)
+        expected_packed = parts_by_shard['down']['weight_packed'][:,
+                                                                  packed_slice]
+        assert not expected_packed.is_contiguous()
+        assert torch.equal(weights.weight_packed[0].cpu(), expected_packed)
     weights.validate_complete()
 
 
