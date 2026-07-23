@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import pickle
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ from lmdeploy.pytorch.distributed import DistContext, get_dist_manager
 from lmdeploy.pytorch.engine.cache_engine import CacheEngine
 from lmdeploy.pytorch.model_inputs import BuildModelContext, ModelInputs, StepContextManager, step_ctx_manager
 from lmdeploy.pytorch.models.deepseek_v2 import DeepseekV2MLP, DeepseekV2MoE
-from lmdeploy.pytorch.models.kimi_k25 import KimiK25ForConditionalGeneration
+from lmdeploy.pytorch.models.kimi_k25 import KimiK25ForConditionalGeneration, KimiK25InputProcessor
 from lmdeploy.pytorch.models.module_map import MODULE_MAP
 from lmdeploy.pytorch.models.patch import _class_from_qualname, _get_model_class, build_patched_model
 from lmdeploy.pytorch.nn.moe.compressed_tensors import FusedMoEW4A16
@@ -78,10 +79,13 @@ def _make_context(input_ids, position_ids, is_decoding):
     return SimpleNamespace(
         input_ids=input_ids,
         position_ids=position_ids,
+        is_decoding=is_decoding,
         attn_metadata=SimpleNamespace(is_decoding=is_decoding),
         input_multimodals=None,
         input_embeddings=None,
+        input_embedding_indexing=None,
         vision_inputs=None,
+        hidden_boundary_probe_positions=None,
     )
 
 
@@ -90,6 +94,11 @@ def tiny_model(monkeypatch):
     import lmdeploy.pytorch.models.kimi_k25 as kimi_k25
 
     monkeypatch.setattr(kimi_k25, 'DeepseekV2ForCausalLM', _TinyLanguageModel)
+    monkeypatch.setattr(
+        kimi_k25,
+        'get_build_model_context',
+        lambda: SimpleNamespace(language_model_only=True),
+    )
     return KimiK25ForConditionalGeneration(
         _make_config(),
         StepContextManager(),
@@ -257,7 +266,7 @@ def test_text_wrapper_fails_closed_for_multimodal_inputs(tiny_model):
     with pytest.raises(NotImplementedError, match='multimodal inference'):
         tiny_model.prepare_inputs_for_generation([], context=context)
 
-    with pytest.raises(NotImplementedError, match='pixel_values'):
+    with pytest.raises(NotImplementedError, match='language_model_only'):
         tiny_model(
             input_ids=torch.tensor([[1]]),
             position_ids=torch.tensor([[0]]),
@@ -268,6 +277,295 @@ def test_text_wrapper_fails_closed_for_multimodal_inputs(tiny_model):
 
 def test_text_wrapper_does_not_claim_cuda_graph_support(tiny_model):
     assert tiny_model.support_cuda_graph() is False
+
+
+class _TinyVisionTower(nn.Module):
+
+    def __init__(self, config, dtype=None, device=None):
+        super().__init__()
+        self.config = config
+        self.patch_embed = nn.Module()
+        self.patch_embed.proj = nn.Conv2d(
+            3,
+            2,
+            kernel_size=1,
+            bias=False,
+            dtype=dtype,
+            device=device,
+        )
+        self.forward_calls = 0
+
+    def forward(self, pixel_values, grid_thws):
+        del pixel_values
+        self.forward_calls += 1
+        outputs = []
+        for image_index, (_, h, w) in enumerate(grid_thws.tolist()):
+            image_tokens = h * w // 4
+            values = torch.arange(
+                image_tokens * 8,
+                dtype=self.patch_embed.proj.weight.dtype,
+                device=self.patch_embed.proj.weight.device,
+            )
+            values = values + image_index * 100
+            outputs.append(values.view(image_tokens, 4, 2))
+        return outputs
+
+
+class _TinyProjector(nn.Module):
+
+    def __init__(self, config, dtype=None, device=None):
+        super().__init__()
+        self.config = config
+        self.proj = nn.Linear(8, 8, bias=False, dtype=dtype, device=device)
+        with torch.no_grad():
+            self.proj.weight.copy_(torch.eye(8, dtype=dtype, device=device))
+
+    def forward(self, image_features):
+        return [self.proj(item.flatten(1)) for item in image_features]
+
+
+def _make_multimodal_config():
+    config = _make_config()
+    config.media_placeholder_token_id = 17
+    config.vision_config = SimpleNamespace(
+        patch_size=14,
+        text_hidden_size=8,
+    )
+    return config
+
+
+@pytest.fixture
+def tiny_multimodal_model(monkeypatch):
+    import lmdeploy.pytorch.models.kimi_k25 as kimi_k25
+
+    monkeypatch.setattr(kimi_k25, 'DeepseekV2ForCausalLM', _TinyLanguageModel)
+    monkeypatch.setattr(kimi_k25, 'KimiK25VisionTower', _TinyVisionTower)
+    monkeypatch.setattr(kimi_k25, 'KimiK25MultiModalProjector', _TinyProjector)
+    monkeypatch.setattr(
+        kimi_k25,
+        'get_build_model_context',
+        lambda: SimpleNamespace(language_model_only=False),
+    )
+    model = KimiK25ForConditionalGeneration(
+        _make_multimodal_config(),
+        StepContextManager(),
+        dtype=torch.bfloat16,
+        device=torch.device('cpu'),
+    )
+    with torch.no_grad():
+        model.language_model.embed_tokens.weight.zero_()
+    return model
+
+
+def _make_tiny_image_input(image_tokens=2):
+    return {
+        'modality': 'image',
+        'pixel_values': torch.arange(8 * 3 * 14 * 14, dtype=torch.float32).view(8, 3, 14, 14),
+        'grid_thws': torch.tensor([[1, 2, 4]]),
+        'offset': (1, 1 + image_tokens),
+        'image_token_id': 17,
+        'image_tokens': image_tokens,
+    }
+
+
+def test_kimi_image_input_processor_preserves_validated_span(tiny_multimodal_model):
+    processor = tiny_multimodal_model.get_input_processor()
+    result = processor.preprocess_input(
+        [3, 17, 17, 4],
+        [_make_tiny_image_input()],
+    )
+
+    assert result.input_ids == [3, 17, 17, 4]
+    assert list(result.input_multimodals) == ['image']
+    image_data = result.input_multimodals['image'][0]
+    assert (image_data.start, image_data.end) == (1, 3)
+    assert image_data.data.shape == (8, 3, 14, 14)
+    assert image_data.data.dtype == torch.bfloat16
+    assert image_data.meta['grid_thws'].tolist() == [[1, 2, 4]]
+    assert image_data.meta['image_token_id'] == 17
+
+
+def test_kimi_image_input_processor_is_pickle_safe_with_remote_config():
+
+    class RemoteKimiConfig:
+        """Stand in for a process-local transformers dynamic-module class."""
+
+        media_placeholder_token_id = 17
+
+    processor = KimiK25InputProcessor(RemoteKimiConfig(), dtype=torch.bfloat16)
+    restored = pickle.loads(pickle.dumps(processor))
+
+    assert not hasattr(restored, 'config')
+    assert restored.media_placeholder_token_id == 17
+    result = restored.preprocess_input(
+        [3, 17, 17, 4],
+        [_make_tiny_image_input()],
+    )
+    assert result.input_multimodals['image'][0].data.dtype == torch.bfloat16
+
+
+@pytest.mark.parametrize(
+    ('update', 'match'),
+    [
+        ({'image_tokens': 1}, 'token count mismatch'),
+        ({'offset': (1, 2)}, 'span length'),
+        ({'grid_thws': torch.tensor([[2, 2, 4]])}, 'static images'),
+        ({'pixel_values': torch.zeros(7, 3, 14, 14)}, 'patch count mismatch'),
+        ({'image_token_id': 18}, 'does not match config'),
+    ],
+)
+def test_kimi_image_input_processor_fails_closed(tiny_multimodal_model, update, match):
+    image_input = _make_tiny_image_input()
+    image_input.update(update)
+    with pytest.raises((ValueError, NotImplementedError), match=match):
+        tiny_multimodal_model.get_input_processor().preprocess_input(
+            [3, 17, 17, 4],
+            [image_input],
+        )
+
+
+def test_kimi_image_input_processor_rejects_reordered_spans(tiny_multimodal_model):
+    first = _make_tiny_image_input()
+    first['offset'] = (3, 5)
+    second = _make_tiny_image_input()
+    second['offset'] = (0, 2)
+
+    with pytest.raises(ValueError, match='prompt order'):
+        tiny_multimodal_model.get_input_processor().preprocess_input(
+            [17, 17, 3, 17, 17],
+            [first, second],
+        )
+
+
+def test_kimi_image_prefill_scatter_and_decode_skip_vision(tiny_multimodal_model):
+    processed = tiny_multimodal_model.get_input_processor().preprocess_input(
+        [3, 17, 17, 4],
+        [_make_tiny_image_input()],
+    )
+    prefill_context = _make_context(
+        input_ids=torch.tensor([[3, 17, 17, 4]]),
+        position_ids=torch.zeros((1, 4), dtype=torch.long),
+        is_decoding=False,
+    )
+    prefill_context.input_multimodals = [processed.input_multimodals]
+    prepared = tiny_multimodal_model.prepare_inputs_for_generation([], context=prefill_context)
+
+    assert prepared['pixel_values'].shape == (8, 3, 14, 14)
+    assert prepared['grid_thws'].tolist() == [[1, 2, 4]]
+    assert prepared['image_mask'].tolist() == [[False, True, True, False]]
+    hidden_states = tiny_multimodal_model(**prepared)
+    expected_image_features = torch.arange(16, dtype=torch.bfloat16).view(2, 8)
+    torch.testing.assert_close(hidden_states[0, 1:3], expected_image_features)
+    torch.testing.assert_close(hidden_states[0, [0, 3]], torch.zeros(2, 8, dtype=torch.bfloat16))
+    assert tiny_multimodal_model.vision_tower.forward_calls == 1
+
+    decode_context = _make_context(
+        input_ids=torch.tensor([[5]]),
+        position_ids=torch.tensor([[4]]),
+        is_decoding=True,
+    )
+    decode_inputs = tiny_multimodal_model.prepare_inputs_for_generation([], context=decode_context)
+    assert 'pixel_values' not in decode_inputs
+    tiny_multimodal_model(**decode_inputs)
+    assert tiny_multimodal_model.vision_tower.forward_calls == 1
+
+
+def test_kimi_packed_requests_preserve_image_feature_order(tiny_multimodal_model):
+    first = tiny_multimodal_model.get_input_processor().preprocess_input(
+        [3, 17, 17, 4],
+        [_make_tiny_image_input()],
+    )
+    second_input = _make_tiny_image_input(image_tokens=4)
+    second_input.update({
+        'pixel_values': torch.zeros(16, 3, 14, 14),
+        'grid_thws': torch.tensor([[1, 4, 4]]),
+        'offset': (1, 5),
+    })
+    second = tiny_multimodal_model.get_input_processor().preprocess_input(
+        [5, 17, 17, 17, 17, 6],
+        [second_input],
+    )
+    packed_context = _make_context(
+        input_ids=torch.tensor([[3, 17, 17, 4, 5, 17, 17, 17, 17, 6]]),
+        position_ids=torch.zeros((1, 10), dtype=torch.long),
+        is_decoding=False,
+    )
+    packed_context.input_multimodals = [
+        first.input_multimodals,
+        second.input_multimodals,
+    ]
+
+    prepared = tiny_multimodal_model.prepare_inputs_for_generation([], context=packed_context)
+    hidden_states = tiny_multimodal_model(**prepared)
+
+    torch.testing.assert_close(
+        hidden_states[0, 1:3],
+        torch.arange(16, dtype=torch.bfloat16).view(2, 8),
+    )
+    torch.testing.assert_close(
+        hidden_states[0, 5:9],
+        (torch.arange(32, dtype=torch.bfloat16) + 100).view(4, 8),
+    )
+
+
+def test_kimi_image_forward_requires_exact_feature_rows(tiny_multimodal_model):
+    with pytest.raises(ValueError, match='projected feature rows'):
+        tiny_multimodal_model(
+            input_ids=torch.tensor([[3, 17, 4]]),
+            position_ids=torch.zeros((1, 3), dtype=torch.long),
+            past_key_values=[],
+            pixel_values=torch.zeros(8, 3, 14, 14),
+            grid_thws=torch.tensor([[1, 2, 4]]),
+            image_mask=torch.tensor([[False, True, False]]),
+        )
+
+
+@pytest.mark.parametrize('orphan_argument', ['grid_thws', 'image_mask'])
+def test_kimi_image_forward_requires_all_image_arguments(tiny_multimodal_model, orphan_argument):
+    kwargs = {
+        orphan_argument:
+        torch.tensor([[1, 2, 4]]) if orphan_argument == 'grid_thws' else torch.tensor([[False, True, False]])
+    }
+    with pytest.raises(ValueError, match='requires pixel_values, grid_thws, and image_mask together'):
+        tiny_multimodal_model(
+            input_ids=torch.tensor([[3, 17, 4]]),
+            position_ids=torch.zeros((1, 3), dtype=torch.long),
+            past_key_values=[],
+            **kwargs,
+        )
+
+
+def test_kimi_multimodal_loader_routes_vision_without_buffering_language(monkeypatch):
+    import lmdeploy.pytorch.models.kimi_k25 as kimi_k25
+
+    monkeypatch.setattr(kimi_k25, 'DeepseekV2ForCausalLM', _TinyLanguageModel)
+    monkeypatch.setattr(kimi_k25, 'KimiK25VisionTower', _TinyVisionTower)
+    monkeypatch.setattr(kimi_k25, 'KimiK25MultiModalProjector', _TinyProjector)
+    monkeypatch.setattr(
+        kimi_k25,
+        'get_build_model_context',
+        lambda: SimpleNamespace(language_model_only=False),
+    )
+    model = KimiK25ForConditionalGeneration(
+        _make_multimodal_config(),
+        StepContextManager(),
+        dtype=torch.float32,
+        device=torch.device('cpu'),
+    )
+    vision_weight = torch.full_like(model.vision_tower.patch_embed.proj.weight, 2)
+    projector_weight = torch.full_like(model.mm_projector.proj.weight, 3)
+    language_weight = torch.full((2, 2), 4.0)
+    model.load_weights(
+        iter([
+            ('vision_tower.patch_embed.proj.weight', vision_weight),
+            ('language_model.model.embed_tokens.weight', language_weight),
+            ('mm_projector.proj.weight', projector_weight),
+        ]))
+
+    torch.testing.assert_close(model.vision_tower.patch_embed.proj.weight, vision_weight)
+    torch.testing.assert_close(model.mm_projector.proj.weight, projector_weight)
+    assert model.language_model.loaded_weights[0][0] == 'model.embed_tokens.weight'
+    assert model.language_model.loaded_weights[0][1] is language_weight
 
 
 def _make_actual_tiny_config():
