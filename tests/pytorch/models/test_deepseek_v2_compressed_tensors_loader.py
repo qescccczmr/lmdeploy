@@ -153,3 +153,137 @@ def test_routed_expert_builder_receives_canonical_prefix(monkeypatch):
     )
 
     assert captured['prefix'] == 'language_model.model.layers.3.mlp.experts'
+
+
+def test_w4a16_moe_promotes_tp_reduce_to_fp32(monkeypatch):
+    fake_group = object()
+    calls = []
+
+    class FakeGate(nn.Module):
+
+        def forward(self, hidden_states):
+            num_tokens = hidden_states.shape[0]
+            return (torch.ones((num_tokens, 1), dtype=torch.float32),
+                    torch.full((num_tokens, 1), 7, dtype=torch.long))
+
+    class FakeExperts(nn.Module):
+        tp_reduce_dtype = torch.float32
+
+        def __init__(self):
+            super().__init__()
+            self.tp_group = fake_group
+
+        def forward(self, hidden_states, topk_weights, topk_ids):
+            return torch.ones_like(hidden_states)
+
+    class FakeSharedExperts(nn.Module):
+
+        def forward(self, hidden_states):
+            return torch.full_like(hidden_states, 0.5)
+
+    def fake_all_reduce(tensor, group='tp'):
+        calls.append((tensor.dtype, group, tensor.clone()))
+        tensor.add_(2)
+
+    moe = deepseek_v2.DeepseekV2MoE.__new__(deepseek_v2.DeepseekV2MoE)
+    nn.Module.__init__(moe)
+    moe.gate = FakeGate()
+    moe.experts = FakeExperts()
+    moe.shared_experts = FakeSharedExperts()
+    moe._all_reduce = True
+    moe.layer_idx = 3
+    monkeypatch.setattr(deepseek_v2.dist, 'all_reduce', fake_all_reduce)
+
+    all_routed_experts = torch.zeros((2, 5, 1), dtype=torch.uint16)
+    result = moe(torch.zeros((1, 2, 4), dtype=torch.bfloat16),
+                 all_routed_experts=all_routed_experts)
+
+    assert len(calls) == 1
+    reduce_dtype, reduce_group, reduced_input = calls[0]
+    assert reduce_dtype == torch.float32
+    assert reduce_group is fake_group
+    torch.testing.assert_close(reduced_input,
+                               torch.full((1, 2, 4), 1.5),
+                               rtol=0,
+                               atol=0)
+    assert result.dtype == torch.bfloat16
+    torch.testing.assert_close(result,
+                               torch.full_like(result, 3.5),
+                               rtol=0,
+                               atol=0)
+    assert torch.equal(all_routed_experts[:, 3],
+                       torch.full((2, 1), 7, dtype=torch.uint16))
+    assert torch.count_nonzero(
+        all_routed_experts.to(torch.int32)[:, [0, 1, 2, 4]]) == 0
+
+
+def test_other_moe_keeps_existing_bf16_tp_reduce(monkeypatch):
+    calls = []
+
+    class FakeGate(nn.Module):
+
+        def forward(self, hidden_states):
+            num_tokens = hidden_states.shape[0]
+            return (torch.ones((num_tokens, 1), dtype=torch.float32),
+                    torch.zeros((num_tokens, 1), dtype=torch.long))
+
+    class FakeExperts(nn.Module):
+
+        def forward(self, hidden_states, topk_weights, topk_ids):
+            return torch.ones_like(hidden_states)
+
+    def fake_all_reduce(tensor, group='tp'):
+        calls.append((tensor.dtype, group))
+
+    moe = deepseek_v2.DeepseekV2MoE.__new__(deepseek_v2.DeepseekV2MoE)
+    nn.Module.__init__(moe)
+    moe.gate = FakeGate()
+    moe.experts = FakeExperts()
+    moe.shared_experts = None
+    moe._all_reduce = True
+    monkeypatch.setattr(deepseek_v2.dist, 'all_reduce', fake_all_reduce)
+
+    result = moe(torch.zeros((1, 2, 4), dtype=torch.bfloat16))
+
+    assert calls == [(torch.bfloat16, 'tp')]
+    assert result.dtype == torch.bfloat16
+
+
+def test_deepseek_v2_returns_routed_expert_ids(monkeypatch):
+
+    class FakeModel(nn.Module):
+
+        def forward(self, input_ids, all_routed_experts, **kwargs):
+            assert all_routed_experts.shape == (2, 4, 2)
+            assert all_routed_experts.dtype == torch.uint16
+            all_routed_experts[:, 1, :] = torch.tensor([3, 5],
+                                                       dtype=torch.uint16)
+            return torch.ones((1, 2, 8), dtype=torch.bfloat16)
+
+    model = deepseek_v2.DeepseekV2ForCausalLM.__new__(
+        deepseek_v2.DeepseekV2ForCausalLM)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(num_hidden_layers=4,
+                                   num_experts_per_tok=2)
+    model.enable_return_routed_experts = True
+    model.model = FakeModel()
+    step_context = SimpleNamespace(enable_microbatch=False)
+    context_manager = SimpleNamespace(
+        current_context=lambda: step_context)
+    monkeypatch.setattr(deepseek_v2, 'get_step_ctx_manager',
+                        lambda: context_manager)
+
+    output = model(
+        input_ids=torch.tensor([[11, 12]]),
+        position_ids=torch.tensor([[0, 1]]),
+        past_key_values=[],
+    )
+
+    assert set(output) == {'hidden_states', 'all_routed_experts'}
+    assert output['hidden_states'].shape == (1, 2, 8)
+    routed = output['all_routed_experts']
+    assert torch.equal(routed[:, 1],
+                       torch.tensor([[3, 5], [3, 5]],
+                                    dtype=torch.uint16))
+    assert torch.count_nonzero(
+        routed.to(torch.int32)[:, [0, 2, 3]]) == 0

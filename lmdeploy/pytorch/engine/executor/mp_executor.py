@@ -409,7 +409,8 @@ class MPExecutor(ExecutorBase):
 
     async def get_output_async(self):
         """Get output async."""
-        return await self.remote_outs.get()
+        output = await self.remote_outs.get()
+        return output.to_tensor()
 
     def get_input_processor(self):
         """Get input processor."""
@@ -463,6 +464,10 @@ class MPWorkerWrapper(WorkerWrapperBase):
             log_level=log_level,
             trust_remote_code=trust_remote_code
         )
+
+    def pack_output(self, output: dict):
+        """Convert tensors unsupported by plain pickle to NumPy."""
+        return output.to_numpy()
 
 
 class ExecutorProc:

@@ -61,6 +61,9 @@ class InferOutput:
     # expert ids
     routed_experts: torch.Tensor = None
 
+    # diagnostic selected-position hidden-state boundaries
+    hidden_boundary_probe: dict[str, torch.Tensor] | None = None
+
     # summed, unnormalized cross-entropy (NLL) of the input prompt
     ce_loss: float = None
 

@@ -142,6 +142,7 @@ class SamplingParam:
     out_ce_loss: bool = False
     num_logprobs: int = -1
     return_routed_experts: bool = False
+    hidden_boundary_probe_positions: list[int] | None = None
 
     # ngram
     repetition_ngram_size: int = 0
@@ -239,6 +240,7 @@ class SamplingParam:
             out_ce_loss=gen_config.return_ppl,
             num_logprobs=logprobs,
             return_routed_experts=gen_config.return_routed_experts,
+            hidden_boundary_probe_positions=gen_config.hidden_boundary_probe_positions,
             repetition_ngram_size=repetition_ngram_size,
             repetition_ngram_threshold=repetition_ngram_threshold,
         )
@@ -819,6 +821,10 @@ class SchedulerSequence:
     @property
     def return_routed_experts(self) -> bool:
         return self.sampling_param.return_routed_experts
+
+    @property
+    def hidden_boundary_probe_positions(self) -> list[int] | None:
+        return self.sampling_param.hidden_boundary_probe_positions
 
     @property
     def routed_experts(self) -> np.ndarray:

@@ -577,6 +577,20 @@ class _ForwardInputsTask:
     def _need_ce_loss(self):
         return any(seq.return_ce_loss for seq in self.result.running)
 
+    def _hidden_boundary_probe_positions(self) -> list[int] | None:
+        probes = [
+            getattr(seq, 'hidden_boundary_probe_positions', None)
+            for seq in self.result.running
+            if getattr(seq, 'hidden_boundary_probe_positions', None)
+            is not None
+        ]
+        if not probes:
+            return None
+        if len(self.result.running) != 1 or len(probes) != 1:
+            raise RuntimeError(
+                'hidden-boundary probe requires exactly one running sequence')
+        return list(probes[0])
+
     def _build_payload(self):
         maker = self.maker
         result = self.result
@@ -597,6 +611,8 @@ class _ForwardInputsTask:
             return_logits=self._need_logits(),
             extra_inputs=result.extra_inputs,
             return_routed_experts=self._need_routed_experts(),
+            hidden_boundary_probe_positions=
+            self._hidden_boundary_probe_positions(),
             return_ce_loss=self._need_ce_loss(),
         )
 

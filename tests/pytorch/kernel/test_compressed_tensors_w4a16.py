@@ -80,8 +80,19 @@ def test_direct_packed_w4a16_gemm_matches_dequantized_reference():
 
 @pytest.mark.parametrize('top_k', [2, 8])
 @torch.inference_mode()
-def test_direct_packed_w4a16_tiny_routed_moe_matches_reference(top_k):
-    from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import fused_moe_w4a16
+def test_direct_packed_w4a16_tiny_routed_moe_matches_reference(
+        top_k, monkeypatch):
+    from lmdeploy.pytorch.kernels.cuda import compressed_tensors_w4a16
+
+    reduce_kwargs = []
+    original_moe_reduce = compressed_tensors_w4a16.moe_reduce
+
+    def _record_moe_reduce(hidden_states, topk_weights, **kwargs):
+        reduce_kwargs.append(kwargs)
+        return original_moe_reduce(hidden_states, topk_weights, **kwargs)
+
+    monkeypatch.setattr(compressed_tensors_w4a16, 'moe_reduce',
+                        _record_moe_reduce)
 
     torch.manual_seed(2)
     device = torch.device('cuda')
@@ -115,7 +126,7 @@ def test_direct_packed_w4a16_tiny_routed_moe_matches_reference(top_k):
                               device=device)
     topk_weights /= topk_weights.sum(dim=-1, keepdim=True)
 
-    output = fused_moe_w4a16(
+    output = compressed_tensors_w4a16.fused_moe_w4a16(
         hidden_states,
         _pack_int4(gate_up_qweight),
         gate_up_scale,
@@ -125,6 +136,7 @@ def test_direct_packed_w4a16_tiny_routed_moe_matches_reference(top_k):
         topk_ids,
         topk=top_k,
     )
+    assert reduce_kwargs == [dict(fp32_acc=True)]
 
     gate_up_weight = _dequantize(gate_up_qweight, gate_up_scale)
     down_weight = _dequantize(down_qweight, down_scale)
@@ -143,6 +155,41 @@ def test_direct_packed_w4a16_tiny_routed_moe_matches_reference(top_k):
     nrmse, cosine = _quality(output, reference)
     assert nrmse <= 1e-2
     assert cosine >= 0.9999
+
+
+@torch.inference_mode()
+def test_direct_packed_w4a16_kimi_combine_uses_fp32_semantics():
+    from lmdeploy.pytorch.kernels.cuda.fused_moe import moe_reduce
+
+    torch.manual_seed(17)
+    device = torch.device('cuda')
+    num_tokens, top_k, hidden_dim = 25, 8, 7168
+    expert_output = torch.randn(num_tokens,
+                                top_k,
+                                hidden_dim,
+                                dtype=torch.bfloat16,
+                                device=device)
+    topk_weights = torch.rand(num_tokens,
+                              top_k,
+                              dtype=torch.float32,
+                              device=device)
+    topk_weights *= 2.827 / topk_weights.sum(dim=-1, keepdim=True)
+
+    actual = moe_reduce(expert_output, topk_weights, fp32_acc=True)
+    reference = (expert_output.float() *
+                 topk_weights[..., None]).sum(dim=1).to(torch.bfloat16)
+    bf16_acc = moe_reduce(expert_output, topk_weights, fp32_acc=False)
+
+    fp32_nrmse, fp32_cosine = _quality(actual, reference)
+    bf16_nrmse, _ = _quality(bf16_acc, reference)
+
+    # Triton and torch may reduce the eight routes in a different order, so a
+    # handful of values can land on adjacent BF16 codes.  The FP32 path should
+    # nevertheless match the HF combine semantics within rounding noise and
+    # be decisively more accurate than the former BF16 combine.
+    assert fp32_nrmse <= 5e-5
+    assert fp32_cosine >= 0.999999
+    assert fp32_nrmse <= bf16_nrmse * 0.01
 
 
 @torch.inference_mode()

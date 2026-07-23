@@ -249,6 +249,10 @@ class CompressedTensorsMoEWeights(nn.Module):
 class FusedMoEW4A16(FusedMoEBase):
     """Eager TP-only routed MoE operating directly on packed INT4 weights."""
 
+    # The Kimi reference combines router-weighted expert outputs in FP32.
+    # Preserve that accumulator through the single outer TP reduction.
+    tp_reduce_dtype = torch.float32
+
     def __init__(
         self,
         hidden_dim: int,
@@ -282,6 +286,10 @@ class FusedMoEW4A16(FusedMoEBase):
         if dist_config.enable_eplb:
             raise RuntimeError(
                 'Compressed-tensors W4A16 does not support EPLB.')
+        if dist_config.enable_microbatch:
+            raise RuntimeError(
+                'Compressed-tensors W4A16 does not support microbatch execution.'
+            )
         if self.tp_mode != TPMode.DEFAULT:
             raise RuntimeError(
                 'Compressed-tensors W4A16 only supports eager default TP mode.'

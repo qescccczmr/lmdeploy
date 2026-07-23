@@ -216,6 +216,8 @@ class ModelInputs:
     is_chunk_multimodal: bool = False
     # mrope, shape(3, sum_seqlens)
     mrope_pos_ids: torch.Tensor | None = None
+    # Diagnostic-only selected prompt positions for layer-boundary capture.
+    hidden_boundary_probe_positions: list[int] | None = None
 
     def step(self, input_ids: torch.Tensor, step_seqlens: torch.Tensor = None):
         """Update input ids."""
@@ -329,6 +331,7 @@ class StepContext:
     is_chunk: bool = False
     is_first_chunk: bool = False
     is_last_chunk: bool = False
+    hidden_boundary_probe_positions: list[int] | None = None
 
     @classmethod
     def new(
@@ -400,6 +403,7 @@ class StepContext:
             is_chunk=inputs.is_chunk,
             is_first_chunk=inputs.is_first_chunk,
             is_last_chunk=inputs.is_last_chunk,
+            hidden_boundary_probe_positions=inputs.hidden_boundary_probe_positions,
         )
 
         ret = get_backend().update_step_context(ret)
@@ -465,6 +469,7 @@ class BuildModelContext:
     dllm_config: DLLMConfig = None
     strategy_factory: 'StrategyFactoryBase' = None
     enable_return_routed_experts: bool = False
+    collect_hidden_boundary_probe: bool = False
     quant_config: QuantizationConfig = field(default_factory=QuantizationConfig)
     fp32_lm_head: bool = False
     tie_word_embeddings: bool = False

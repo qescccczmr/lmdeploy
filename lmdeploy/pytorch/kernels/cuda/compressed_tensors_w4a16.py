@@ -455,12 +455,12 @@ def fused_moe_w4a16(
             'Down input dimension must match half of gate-up output')
 
     num_tokens = hidden_states.size(0)
-    if num_tokens == 0:
-        return hidden_states.new_empty((0, hidden_dim))
     num_experts = gate_up_packed.size(0)
     if topk > num_experts:
         raise ValueError(
             f'top_k={topk} cannot exceed num_experts={num_experts}')
+    if num_tokens == 0:
+        return hidden_states.new_empty((0, hidden_dim))
     topk_weights = _renormalize(topk_weights, renormalize)
     if num_experts == 1:
         # The shared Triton sorter cannot compile a width-one tl.sort. With one
@@ -536,4 +536,4 @@ def fused_moe_w4a16(
         group_size=group_size,
         **compact_meta,
     )
-    return moe_reduce(expert_output, topk_weights)
+    return moe_reduce(expert_output, topk_weights, fp32_acc=True)

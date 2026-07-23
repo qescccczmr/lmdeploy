@@ -227,6 +227,8 @@ class EngineLoop:
                                 cache_block_ids=out.cache_block_ids,
                                 req_metrics=out.req_metrics,
                                 routed_experts=out.routed_experts,
+                                hidden_boundary_probe=
+                                out.hidden_boundary_probe,
                                 logprobs=logprobs,
                                 ce_loss=out.ce_loss))
 
@@ -315,6 +317,9 @@ class EngineLoop:
 
         logits = batched_outputs.logits
         all_routed_experts = batched_outputs.all_routed_experts
+        hidden_boundary_probe = batched_outputs.hidden_boundary_probe
+        if hidden_boundary_probe is not None:
+            hidden_boundary_probe = hidden_boundary_probe.tensors
         ce_loss = batched_outputs.ce_loss
 
         if model_inputs is not None and (model_inputs.is_chunk and not model_inputs.is_last_chunk):
@@ -382,7 +387,8 @@ class EngineLoop:
                               cache_block_ids=cache_block_ids,
                               req_metrics=req_metrics,
                               logprobs=cur_logprobs,
-                              routed_experts=msg.routed_experts)
+                              routed_experts=msg.routed_experts,
+                              hidden_boundary_probe=hidden_boundary_probe)
             outputs[session_id] = out
 
             if msg.return_ce_loss:
