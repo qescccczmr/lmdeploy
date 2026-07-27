@@ -24,7 +24,7 @@ def _refreeze(source_suite):
 def test_source_suite_is_pre_oracle_exact_10_5_5():
     source_suite = load_source_suite()
     assert source_suite['source_suite_sha256'] == (
-        'e283c024554af0293a155093638062d9cad3349fc14bc7ea0c161e2f4d0b0751')
+        '7edd216a3e8b2d916456ed8baeaa8229e41da678c889857f7871ec5ad39c7d6c')
     assert source_suite['oracle_policy']['thinking'] is False
     assert Counter(case['kind'] for case in source_suite['cases']) == {
         'text': 10,
