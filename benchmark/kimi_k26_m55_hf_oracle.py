@@ -1061,6 +1061,13 @@ def _max_memory_map(
     return {index: f'{value}GiB' for index, value in enumerate(values)}
 
 
+def _snapshot_max_memory_evidence(
+    max_memory: Mapping[int, str],
+) -> dict[str, str]:
+    """Freeze loader memory limits before Accelerate normalizes them in place."""
+    return {str(index): limit for index, limit in max_memory.items()}
+
+
 def _package_version(name: str) -> str | None:
     try:
         return package_version(name)
@@ -1645,11 +1652,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         args.max_memory_gib,
         args.max_memory_gib_per_gpu,
     )
+    max_memory_evidence = _snapshot_max_memory_evidence(max_memory)
     _emit(
         'load_start',
         model_path=str(model_path),
         expected_gpus=args.expected_gpus,
-        max_memory=max_memory,
+        max_memory=max_memory_evidence,
     )
     load_started = time.perf_counter()
     model = AutoModelForCausalLM.from_pretrained(
@@ -1659,7 +1667,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         local_files_only=True,
         dtype='auto',
         device_map='balanced',
-        max_memory=max_memory,
+        max_memory=dict(max_memory),
         low_cpu_mem_usage=True,
     ).eval()
     load_seconds = time.perf_counter() - load_started
@@ -1920,10 +1928,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         actual_text_attention,
         'vision_attention':
         'pinned_upstream_flash_attention_2_regular_path',
-        'max_memory': {
-            str(index): limit
-            for index, limit in max_memory.items()
-        },
+        'max_memory':
+        max_memory_evidence,
         'seed':
         policy['seed'],
         'generation_policy': {

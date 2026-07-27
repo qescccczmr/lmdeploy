@@ -34,6 +34,8 @@ from benchmark.kimi_k26_m55_hf_oracle import (
     PINNED_FA2_WHEEL_SHA256,
     M55HFOracleError,
     _force_offline_policy,
+    _max_memory_map,
+    _snapshot_max_memory_evidence,
     _stage_and_exclusive_publish_artifact,
     build_dataset_manifest,
     build_gate_lock_payload,
@@ -108,6 +110,25 @@ def test_offline_policy_overrides_host_environment(monkeypatch):
     }
     for name, value in policy.items():
         assert os.environ[name] == value
+
+
+def test_max_memory_evidence_survives_loader_mapping_mutation():
+    max_memory = _max_memory_map(2, 120, None)
+    evidence = _snapshot_max_memory_evidence(max_memory)
+
+    # Accelerate normalizes the mapping passed to from_pretrained to byte
+    # counts in place.  Provenance must retain the user-facing GiB limits.
+    loader_mapping = dict(max_memory)
+    loader_mapping[0] = 120 * 1024**3
+
+    assert evidence == {
+        '0': '120GiB',
+        '1': '120GiB',
+    }
+    assert max_memory == {
+        0: '120GiB',
+        1: '120GiB',
+    }
 
 
 def _fa2_dependency():
