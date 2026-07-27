@@ -1,0 +1,65 @@
+{
+  "schema_version": "kimi-k26-m55-qualification-thresholds/1",
+  "gate_id": "kimi-k26-m55-sentinel-v1",
+  "scope": "sentinel",
+  "scorer_bundle_sha256": "a11aaeb7639ba36ac3e58b33270eff766558fd6d4e9b69b8f1bae8d9ad37f79e",
+  "hard": {
+    "processor_contract": "exact",
+    "self_determinism": "exact",
+    "catastrophic_failures_max": 0,
+    "stable_top1": {
+      "oracle_margin_min": 0.05,
+      "overall_min": 0.99,
+      "per_task_min": 0.95
+    },
+    "top20_overlap": {
+      "macro_min": 0.95,
+      "case_p05_min": 0.8
+    },
+    "full_logprob": {
+      "nrmse_macro_max": 0.02,
+      "nrmse_case_p95_max": 0.05,
+      "cosine_macro_min": 0.999
+    },
+    "target_logprob": {
+      "abs_error_p95_max": 0.25,
+      "abs_error_max": 1.0
+    },
+    "task_score": {
+      "overall_drop_max": 0.02,
+      "per_task_drop_max": 0.05,
+      "absolute_min_by_task": {
+        "chart_reading": 1.0,
+        "code_generation": 1.0,
+        "color_recognition": 1.0,
+        "conversational_identity": 1.0,
+        "format_following": 1.0,
+        "knowledge_qa": 1.0,
+        "long_context_continuation": 1.0,
+        "multi_image_comparison": 1.0,
+        "poetry_generation": 1.0,
+        "regional_knowledge": 1.0,
+        "visual_property": 1.0
+      }
+    }
+  },
+  "report_only": {
+    "kl": "report_only",
+    "js": "report_only",
+    "rank_correlation": "report_only",
+    "sglang_cross_check": "report_only"
+  },
+  "aggregation": {
+    "case_weighting": "macro",
+    "task_weighting": "macro",
+    "metric_hierarchy": {
+      "macro": "position_mean_then_case_mean_then_task_mean",
+      "case_percentiles": "per_case_position_mean_then_case_population_percentile",
+      "target_logprob_p95": "per_case_position_p95_then_case_mean_then_task_mean",
+      "bootstrap": "stratified_task_case_resampling"
+    },
+    "percentile_method": "linear",
+    "bootstrap_samples": 10000,
+    "bootstrap_seed": 20260724
+  }
+}
