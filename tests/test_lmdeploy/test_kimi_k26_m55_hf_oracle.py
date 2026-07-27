@@ -309,6 +309,14 @@ def _oracle_runtime(source_suite, *, vision_sha, checkpoint, pinned_fa2):
         M55_ORACLE_ENGINE,
         'python':
         '3.13.13',
+        'python_executable':
+        '/test/python',
+        'python_prefix':
+        '/test/venv',
+        'python_base_prefix':
+        '/test/base-python',
+        'python_no_user_site':
+        True,
         'platform':
         'Linux-test-x86_64',
         'torch':
@@ -325,19 +333,29 @@ def _oracle_runtime(source_suite, *, vision_sha, checkpoint, pinned_fa2):
         '0.7.0',
         'compressed_tensors':
         '0.15.0.1',
+        'numpy':
+        '2.5.1',
+        'pillow':
+        '12.0.0',
         'offline_policy': {
             'HF_HUB_OFFLINE': '1',
             'TRANSFORMERS_OFFLINE': '1',
             'TOKENIZERS_PARALLELISM': 'false',
         },
+        'kernels_package_masked':
+        True,
         'gpu_count':
-        2,
+        8,
         'expected_gpus':
-        2,
-        'gpu_names': ['NVIDIA H200', 'NVIDIA H200'],
+        8,
+        'gpu_names': ['NVIDIA H200' for _ in range(8)],
+        'gpu_compute_capabilities': [[9, 0] for _ in range(8)],
+        'gpu_total_memory_bytes': [150000000000 for _ in range(8)],
+        'cuda_visible_devices': '0,1,2,3,4,5,6,7',
+        'nvidia_smi_driver_version': '595.71.05',
         'device_map': {
-            'language_model.model.embed_tokens': '0',
-            'language_model.lm_head': '1',
+            f'language_model.model.layers.{index}': str(index)
+            for index in range(8)
         },
         'input_device':
         'cuda:0',
@@ -350,8 +368,8 @@ def _oracle_runtime(source_suite, *, vision_sha, checkpoint, pinned_fa2):
         'vision_attention':
         'pinned_upstream_flash_attention_2_regular_path',
         'max_memory': {
-            '0': '120GiB',
-            '1': '120GiB',
+            str(index): '120GiB'
+            for index in range(8)
         },
         'seed':
         source_suite['oracle_policy']['seed'],
@@ -739,8 +757,9 @@ def test_oracle_artifact_uses_m45_transport_and_lock_hashes_complete_output(
             'exact schema',
         ),
         (
-            'runtime schema',
-            lambda runtime: runtime.__setitem__('schema_version', 'draft/2'),
+            'legacy runtime schema',
+            lambda runtime: runtime.__setitem__(
+                'schema_version', 'kimi-k26-m55-hf-runtime/1'),
             'schema_version',
         ),
         (
@@ -756,8 +775,8 @@ def test_oracle_artifact_uses_m45_transport_and_lock_hashes_complete_output(
         ),
         (
             'GPU count mismatch',
-            lambda runtime: runtime.__setitem__('expected_gpus', 3),
-            'gpu_count must equal',
+            lambda runtime: runtime.__setitem__('expected_gpus', 7),
+            'exactly 8',
         ),
         (
             'GPU name cardinality',
@@ -766,8 +785,36 @@ def test_oracle_artifact_uses_m45_transport_and_lock_hashes_complete_output(
         ),
         (
             'GPU memory coverage',
-            lambda runtime: runtime['max_memory'].pop('1'),
+            lambda runtime: runtime['max_memory'].pop('7'),
             'max_memory',
+        ),
+        (
+            'GPU capability',
+            lambda runtime: runtime['gpu_compute_capabilities'].__setitem__(
+                0, [8, 0]),
+            'compute capability',
+        ),
+        (
+            'Python executable',
+            lambda runtime: runtime.__setitem__('python_executable',
+                                                'relative/python'),
+            'python_executable',
+        ),
+        (
+            'Python environment prefix',
+            lambda runtime: runtime.__setitem__('python_prefix',
+                                                'relative/venv'),
+            'python_prefix',
+        ),
+        (
+            'Python user site enabled',
+            lambda runtime: runtime.__setitem__('python_no_user_site', False),
+            'user site',
+        ),
+        (
+            'NumPy version',
+            lambda runtime: runtime.__setitem__('numpy', '2.4.0'),
+            'dependency versions',
         ),
         (
             'CPU offload',

@@ -19,6 +19,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 
 import torch
@@ -47,7 +48,7 @@ from benchmark.kimi_k26_m55_metrics import score_task_answer
 
 M55_ORACLE_ARTIFACT_SCHEMA_VERSION = 'kimi-k26-m55-oracle-artifact/1'
 M55_PROCESSOR_CONTRACT_SCHEMA_VERSION = ('kimi-k26-m55-processor-contract/1')
-M55_ORACLE_RUNTIME_SCHEMA_VERSION = 'kimi-k26-m55-hf-runtime/1'
+M55_ORACLE_RUNTIME_SCHEMA_VERSION = 'kimi-k26-m55-hf-runtime/2'
 
 PINNED_FA2_SOURCE_COMMIT = '82d6441eec5d4dfec120153db2c0145ae855a083'
 PINNED_FA2_PACKAGE_VERSION = '2.8.4+main82d6441.mixedsplito1'
@@ -67,6 +68,8 @@ PINNED_RUNTIME_DEPENDENCY_VERSIONS = {
     'accelerate': '1.14.0',
     'safetensors': '0.7.0',
     'compressed_tensors': '0.15.0.1',
+    'numpy': '2.5.1',
+    'pillow': '12.0.0',
 }
 
 _SHA256_ALPHABET = frozenset('0123456789abcdef')
@@ -139,6 +142,10 @@ _RUNTIME_FIELDS = {
     'schema_version',
     'engine',
     'python',
+    'python_executable',
+    'python_prefix',
+    'python_base_prefix',
+    'python_no_user_site',
     'platform',
     'torch',
     'cuda',
@@ -147,10 +154,17 @@ _RUNTIME_FIELDS = {
     'accelerate',
     'safetensors',
     'compressed_tensors',
+    'numpy',
+    'pillow',
     'offline_policy',
+    'kernels_package_masked',
     'gpu_count',
     'expected_gpus',
     'gpu_names',
+    'gpu_compute_capabilities',
+    'gpu_total_memory_bytes',
+    'cuda_visible_devices',
+    'nvidia_smi_driver_version',
     'device_map',
     'input_device',
     'model_class',
@@ -770,20 +784,37 @@ def _validate_runtime(
     if runtime['engine'] != dataset_manifest['identities']['oracle_engine']:
         raise M55OracleArtifactError(
             'oracle runtime engine differs from the dataset identity')
-    for field in ('python', 'platform'):
+    for field in (
+            'python',
+            'python_executable',
+            'python_prefix',
+            'python_base_prefix',
+            'platform',
+    ):
         _require_nonempty_string(runtime[field], f'oracle runtime {field}')
-    if (not runtime['python'].startswith('3.13.')
+    for field in ('python_executable', 'python_prefix', 'python_base_prefix'):
+        path = runtime[field]
+        if (PurePosixPath(path).is_absolute() is not True
+                or str(PurePosixPath(path)) != path):
+            raise M55OracleArtifactError(
+                f'oracle runtime {field} must be a normalized absolute path')
+    if runtime['python_no_user_site'] is not True:
+        raise M55OracleArtifactError(
+            'oracle runtime must disable the Python user site')
+    if (not runtime['python'].startswith('3.13.13')
             or not runtime['platform'].startswith('Linux-')
             or 'x86_64' not in runtime['platform']):
         raise M55OracleArtifactError(
             'oracle runtime Python/platform differs from the pinned '
-            'Linux x86_64 Python 3.13 environment')
+            'Linux x86_64 Python 3.13.13 environment')
     for field in (
             'torch',
             'cuda',
             'accelerate',
             'safetensors',
             'compressed_tensors',
+            'numpy',
+            'pillow',
     ):
         _require_version(runtime[field], f'oracle runtime {field}')
     actual_dependency_versions = {
@@ -801,6 +832,9 @@ def _validate_runtime(
     }:
         raise M55OracleArtifactError(
             'oracle runtime offline policy is not forced')
+    if not isinstance(runtime['kernels_package_masked'], bool):
+        raise M55OracleArtifactError(
+            'oracle runtime kernels_package_masked must be boolean')
 
     _validate_gpu_runtime(runtime)
     _validate_generation_policy(
@@ -903,15 +937,36 @@ def _validate_gpu_runtime(runtime: Mapping[str, Any]) -> None:
                                       'oracle runtime gpu_count')
     expected_gpus = _require_positive_int(runtime['expected_gpus'],
                                           'oracle runtime expected_gpus')
-    if gpu_count != expected_gpus:
+    if gpu_count != 8 or expected_gpus != 8:
         raise M55OracleArtifactError(
-            'oracle runtime gpu_count must equal expected_gpus')
+            'oracle runtime requires exactly 8 visible GPUs')
     gpu_names = runtime['gpu_names']
     if (not isinstance(gpu_names, list) or len(gpu_names) != gpu_count
             or any(not isinstance(name, str) or not name for name in gpu_names)
             or set(gpu_names) != {'NVIDIA H200'}):
         raise M55OracleArtifactError(
             'oracle runtime gpu_names must identify only NVIDIA H200 GPUs')
+    capabilities = runtime['gpu_compute_capabilities']
+    if (not isinstance(capabilities, list)
+            or capabilities != [[9, 0] for _ in range(8)]):
+        raise M55OracleArtifactError(
+            'oracle runtime requires 8 GPUs with compute capability 9.0')
+    total_memory = runtime['gpu_total_memory_bytes']
+    if (not isinstance(total_memory, list) or len(total_memory) != 8
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   or value <= 0 for value in total_memory)):
+        raise M55OracleArtifactError(
+            'oracle runtime GPU total-memory evidence is invalid')
+    cuda_visible_devices = runtime['cuda_visible_devices']
+    if (cuda_visible_devices is not None
+            and (not isinstance(cuda_visible_devices, str)
+                 or not cuda_visible_devices)):
+        raise M55OracleArtifactError(
+            'oracle runtime CUDA_VISIBLE_DEVICES must be non-empty or null')
+    _require_version(
+        runtime['nvidia_smi_driver_version'],
+        'oracle runtime nvidia_smi_driver_version',
+    )
 
     max_memory = _require_mapping(runtime['max_memory'],
                                   'oracle runtime max_memory')

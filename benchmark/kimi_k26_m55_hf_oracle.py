@@ -1068,6 +1068,34 @@ def _package_version(name: str) -> str | None:
         return None
 
 
+def _nvidia_smi_driver_version(expected_gpus: int) -> str:
+    try:
+        result = subprocess.run(
+            [
+                'nvidia-smi',
+                '--query-gpu=driver_version',
+                '--format=csv,noheader,nounits',
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        raise M55HFOracleError(
+            f'cannot execute nvidia-smi: {error}') from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise M55HFOracleError(f'nvidia-smi driver query failed: {detail}')
+    versions = [
+        line.strip() for line in result.stdout.splitlines() if line.strip()
+    ]
+    if len(versions) != expected_gpus or len(set(versions)) != 1:
+        raise M55HFOracleError(
+            'nvidia-smi must report one identical driver version for all '
+            f'{expected_gpus} GPUs')
+    return versions[0]
+
+
 def _normalized_device_map(model: Any) -> dict[str, str]:
     device_map = getattr(model, 'hf_device_map', None)
     if not isinstance(device_map, Mapping) or not device_map:
@@ -1496,12 +1524,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             'HF oracle requires Transformers exactly 4.57.1, got '
             f'{transformers.__version__}')
     gpu_count = torch.cuda.device_count()
-    if gpu_count != args.expected_gpus:
+    if args.expected_gpus != 8 or gpu_count != 8:
         raise M55HFOracleError(
-            f'expected {args.expected_gpus} visible GPUs, got {gpu_count}')
+            'HF oracle requires exactly 8 visible GPUs, got '
+            f'--expected-gpus={args.expected_gpus}, visible={gpu_count}')
     runtime_dependencies = {
         'safetensors': _package_version('safetensors'),
         'compressed_tensors': _package_version('compressed-tensors'),
+        'numpy': _package_version('numpy'),
+        'pillow': _package_version('Pillow'),
     }
     missing_runtime_dependencies = [
         name for name, value in runtime_dependencies.items() if value is None
@@ -1531,6 +1562,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             'HF oracle runtime dependency versions differ from the pinned '
             f'environment: actual={actual_runtime_versions}, '
             f'expected={PINNED_RUNTIME_DEPENDENCY_VERSIONS}')
+    gpu_names = []
+    gpu_compute_capabilities = []
+    gpu_total_memory_bytes = []
+    for index in range(gpu_count):
+        properties = torch.cuda.get_device_properties(index)
+        name = str(properties.name)
+        capability = list(torch.cuda.get_device_capability(index))
+        total_memory = int(properties.total_memory)
+        if name != 'NVIDIA H200' or capability != [9, 0] or total_memory <= 0:
+            raise M55HFOracleError(
+                f'CUDA device {index} is not the required NVIDIA H200 '
+                'compute capability 9.0 device')
+        gpu_names.append(name)
+        gpu_compute_capabilities.append(capability)
+        gpu_total_memory_bytes.append(total_memory)
+    nvidia_smi_driver_version = _nvidia_smi_driver_version(gpu_count)
 
     source_suite = load_source_suite(args.source_suite)
     thresholds = load_source_thresholds(
@@ -1815,6 +1862,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         M55_ORACLE_ENGINE,
         'python':
         sys.version,
+        'python_executable':
+        str(Path(sys.executable).absolute()),
+        'python_prefix':
+        str(Path(sys.prefix).absolute()),
+        'python_base_prefix':
+        str(Path(sys.base_prefix).absolute()),
+        'python_no_user_site':
+        bool(sys.flags.no_user_site),
         'platform':
         platform.platform(),
         'torch':
@@ -1831,14 +1886,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         actual_runtime_versions['safetensors'],
         'compressed_tensors':
         actual_runtime_versions['compressed_tensors'],
+        'numpy':
+        actual_runtime_versions['numpy'],
+        'pillow':
+        actual_runtime_versions['pillow'],
         'offline_policy':
         offline_policy,
+        'kernels_package_masked':
+        bool(args.mask_kernels_package),
         'gpu_count':
         gpu_count,
         'expected_gpus':
         args.expected_gpus,
         'gpu_names':
-        [torch.cuda.get_device_name(index) for index in range(gpu_count)],
+        gpu_names,
+        'gpu_compute_capabilities':
+        gpu_compute_capabilities,
+        'gpu_total_memory_bytes':
+        gpu_total_memory_bytes,
+        'cuda_visible_devices':
+        os.environ.get('CUDA_VISIBLE_DEVICES'),
+        'nvidia_smi_driver_version':
+        nvidia_smi_driver_version,
         'device_map':
         device_map,
         'input_device':

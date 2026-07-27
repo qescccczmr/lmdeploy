@@ -347,6 +347,10 @@ def _oracle_runtime(manifest, *, checkpoint, vision_sha, pinned_fa2):
         'schema_version': M55_ORACLE_RUNTIME_SCHEMA_VERSION,
         'engine': manifest['identities']['oracle_engine'],
         'python': '3.13.13',
+        'python_executable': '/test/python',
+        'python_prefix': '/test/venv',
+        'python_base_prefix': '/test/base-python',
+        'python_no_user_site': True,
         'platform': 'Linux-test-x86_64',
         'torch': '2.9.1+cu128',
         'cuda': '12.8',
@@ -355,17 +359,24 @@ def _oracle_runtime(manifest, *, checkpoint, vision_sha, pinned_fa2):
         'accelerate': '1.14.0',
         'safetensors': '0.7.0',
         'compressed_tensors': '0.15.0.1',
+        'numpy': '2.5.1',
+        'pillow': '12.0.0',
         'offline_policy': {
             'HF_HUB_OFFLINE': '1',
             'TRANSFORMERS_OFFLINE': '1',
             'TOKENIZERS_PARALLELISM': 'false',
         },
-        'gpu_count': 2,
-        'expected_gpus': 2,
-        'gpu_names': ['NVIDIA H200', 'NVIDIA H200'],
+        'kernels_package_masked': True,
+        'gpu_count': 8,
+        'expected_gpus': 8,
+        'gpu_names': ['NVIDIA H200' for _ in range(8)],
+        'gpu_compute_capabilities': [[9, 0] for _ in range(8)],
+        'gpu_total_memory_bytes': [150000000000 for _ in range(8)],
+        'cuda_visible_devices': '0,1,2,3,4,5,6,7',
+        'nvidia_smi_driver_version': '595.71.05',
         'device_map': {
-            'language_model.model.embed_tokens': '0',
-            'language_model.lm_head': '1',
+            f'language_model.model.layers.{index}': str(index)
+            for index in range(8)
         },
         'input_device': 'cuda:0',
         'model_class': 'KimiK25ForConditionalGeneration',
@@ -373,8 +384,8 @@ def _oracle_runtime(manifest, *, checkpoint, vision_sha, pinned_fa2):
         'text_attention': 'eager',
         'vision_attention': 'pinned_upstream_flash_attention_2_regular_path',
         'max_memory': {
-            '0': '120GiB',
-            '1': '120GiB',
+            str(index): '120GiB'
+            for index in range(8)
         },
         'seed': 0,
         'generation_policy': {
