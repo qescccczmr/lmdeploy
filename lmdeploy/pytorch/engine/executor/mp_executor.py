@@ -64,7 +64,7 @@ class Notifier:
         if self._event_id == NUM_SHARED_BLOCK - 1:
             await event_loop.run_in_executor(None, self.bar.wait)
             [event.clear() for event in self.events]
-            self.bar.wait()
+            await event_loop.run_in_executor(None, self.bar.wait)
         self._update_event_id()
 
     @contextmanager
@@ -82,8 +82,8 @@ class Notifier:
         await event_loop.run_in_executor(None, self.events[self._event_id].wait)
         yield
         if self._event_id == NUM_SHARED_BLOCK - 1:
-            self.bar.wait()
-            self.bar.wait()
+            await event_loop.run_in_executor(None, self.bar.wait)
+            await event_loop.run_in_executor(None, self.bar.wait)
         self._update_event_id()
 
     def close(self):
@@ -182,6 +182,22 @@ class SharedBuffer:
         data = pickle.loads(dumped_data)
         return data
 
+    async def _receive_step1_async(self, dumped_data, is_receiver, remain_size):
+        """Receive the remaining packages without blocking the event loop."""
+        while remain_size > 0:
+            async with self.notifier.wait_async():
+                with self.acquire_buf() as buf:
+                    pac_size = min(remain_size, SHARED_BLOCK_SIZE)
+                    remain_size -= pac_size
+                    if not is_receiver:
+                        continue
+                    dumped_data += buf[HEAD_SIZE:HEAD_SIZE + pac_size]
+
+        if not is_receiver:
+            return None
+        data = pickle.loads(dumped_data)
+        return data
+
     def receive(self):
         """Unpack data."""
         with self.notifier.wait():
@@ -192,7 +208,11 @@ class SharedBuffer:
         """Async receive data."""
         async with self.notifier.wait_async():
             dumped_data, is_receiver, remain_size = self._receive_step0()
-        return self._receive_step1(dumped_data, is_receiver, remain_size)
+        return await self._receive_step1_async(
+            dumped_data,
+            is_receiver,
+            remain_size,
+        )
 
     def close(self):
         if self.is_closed:
