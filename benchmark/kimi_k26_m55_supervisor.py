@@ -67,6 +67,35 @@ class SupervisorInterrupted(BaseException):
         super().__init__(f'supervisor received signal {signum}')
 
 
+class _SpawnSignalDeferral:
+    """Defer supervisor termination without changing the child signal mask."""
+
+    def __init__(self):
+        self.active = False
+        self.pending_signum: int | None = None
+
+    def defer(self, signum: int) -> bool:
+        """Record the first signal while the supervisor acquires child PID."""
+        if not self.active:
+            return False
+        if self.pending_signum is None:
+            self.pending_signum = signum
+        return True
+
+
+_SPAWN_SIGNAL_DEFERRAL = _SpawnSignalDeferral()
+
+
+def _handle_supervisor_termination_signal(
+    signum: int,
+    unused_frame: Any,
+) -> None:
+    """Raise only after a concurrently spawned child has an owning Popen."""
+    if _SPAWN_SIGNAL_DEFERRAL.defer(signum):
+        return
+    raise SupervisorInterrupted(signum)
+
+
 @dataclass(frozen=True)
 class LifecycleSpec:
     """Immutable identities and output locations for one child lifecycle."""
@@ -329,19 +358,24 @@ def terminate_child_process_group(
 
 @contextmanager
 def _defer_termination_signals_during_spawn():
-    """Do not deliver SIGINT/SIGTERM between Popen and PID ownership."""
-    pthread_sigmask = getattr(signal, 'pthread_sigmask', None)
-    if pthread_sigmask is None:
-        yield
-        return
-    blocked = {signal.SIGINT, signal.SIGTERM}
-    previous_mask = pthread_sigmask(signal.SIG_BLOCK, blocked)
+    """Defer interruption until Popen returns without masking the child."""
+    state = _SPAWN_SIGNAL_DEFERRAL
+    if state.active:
+        raise M55SupervisorError('nested child-spawn signal deferral')
+    state.active = True
+    state.pending_signum = None
     try:
         yield
     finally:
-        # A pending signal is delivered here, after the caller has assigned
-        # the returned Popen object and can therefore clean its process group.
-        pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        # Popen has either returned and assigned the owned process or raised.
+        # A caught handler is reset to the default disposition by exec, unlike
+        # a pthread signal mask, so candidate workers cannot inherit this
+        # supervisor-only deferral.
+        pending_signum = state.pending_signum
+        state.active = False
+        state.pending_signum = None
+        if pending_signum is not None:
+            raise SupervisorInterrupted(pending_signum)
 
 
 def _tail_text(path: Path, limit: int = 4096) -> str:
@@ -800,11 +834,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         for signum in (signal.SIGINT, signal.SIGTERM)
     }
 
-    def _interrupt(signum, unused_frame):
-        raise SupervisorInterrupted(signum)
-
     for signum in previous_handlers:
-        signal.signal(signum, _interrupt)
+        signal.signal(signum, _handle_supervisor_termination_signal)
     try:
         try:
             results = run(args)

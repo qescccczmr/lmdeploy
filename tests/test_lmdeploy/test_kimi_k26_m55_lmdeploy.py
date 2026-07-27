@@ -3,8 +3,11 @@
 import argparse
 import asyncio
 import hashlib
+import json
+import os
 import signal
 import subprocess
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -42,6 +45,9 @@ from benchmark.kimi_k26_m55_oracle_common import (
 from benchmark.kimi_k26_m55_supervisor import (
     ChildOutcome,
     LifecycleSpec,
+    SupervisorInterrupted,
+    _defer_termination_signals_during_spawn,
+    _handle_supervisor_termination_signal,
     assert_supervisor_outputs_absent,
     candidate_command,
     lifecycle_specs,
@@ -809,6 +815,71 @@ def test_terminate_child_group_blocks_when_sigkill_is_unresolved(monkeypatch):
         (process.pid, signal.SIGTERM),
         (process.pid, signal.SIGKILL),
     ]
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, 'pthread_sigmask'),
+    reason='POSIX signal-mask inspection is unavailable',
+)
+def test_spawn_guard_does_not_mask_child_or_grandchild_signals():
+    query_mask = ('import json, signal; '
+                  'mask = signal.pthread_sigmask(signal.SIG_BLOCK, set()); '
+                  'print(json.dumps(sorted(item.value for item in mask)))')
+    child = ('import json, signal, subprocess, sys; '
+             'mask = signal.pthread_sigmask(signal.SIG_BLOCK, set()); '
+             'grandchild = subprocess.check_output('
+             '[sys.executable, "-c", sys.argv[1]], text=True); '
+             'print(json.dumps({'
+             '"child": sorted(item.value for item in mask), '
+             '"grandchild": json.loads(grandchild)}))')
+
+    with _defer_termination_signals_during_spawn():
+        completed = subprocess.run(
+            [sys.executable, '-c', child, query_mask],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    masks = json.loads(completed.stdout)
+    for label in ('child', 'grandchild'):
+        assert signal.SIGINT not in masks[label]
+        assert signal.SIGTERM not in masks[label]
+
+
+@pytest.mark.parametrize('signum', (signal.SIGINT, signal.SIGTERM))
+def test_spawn_guard_defers_interrupt_until_process_is_owned(signum):
+    previous_handler = signal.getsignal(signum)
+    process = None
+    owned_before_interrupt = False
+    signal.signal(signum, _handle_supervisor_termination_signal)
+    try:
+        with pytest.raises(SupervisorInterrupted) as caught:
+            try:
+                with _defer_termination_signals_during_spawn():
+                    process = subprocess.Popen(
+                        [
+                            sys.executable,
+                            '-c',
+                            'import time; time.sleep(60)',
+                        ],
+                        start_new_session=True,
+                    )
+                    os.kill(os.getpid(), signum)
+                    owned_before_interrupt = process.pid > 0
+            finally:
+                if process is not None and process.poll() is None:
+                    terminate_child_process_group(
+                        process,
+                        grace_seconds=2.0,
+                        kill_wait_seconds=2.0,
+                    )
+        assert caught.value.signum == signum
+        assert owned_before_interrupt
+        assert process is not None
+        assert process.poll() is not None
+    finally:
+        signal.signal(signum, previous_handler)
 
 
 class _FakeProcess:
