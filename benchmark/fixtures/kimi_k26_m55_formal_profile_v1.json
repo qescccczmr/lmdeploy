@@ -1,0 +1,166 @@
+{
+  "schema_version": "kimi-k26-m55-formal-profile/1",
+  "profile_id": "kimi-k26-m55-formal-v1",
+  "scope": "formal",
+  "production_qualified": false,
+  "readiness_states": [
+    "READY_FOR_PREHOLDOUT_FREEZE",
+    "INVALID",
+    "BLOCKED_NOT_FROZEN"
+  ],
+  "dataset": {
+    "kind_quotas": {
+      "text_control": {
+        "min": 20,
+        "max": 50
+      },
+      "single_image": {
+        "min": 60,
+        "max": 120
+      },
+      "multi_image": {
+        "min": 40,
+        "max": 80
+      },
+      "image_total": {
+        "min": 100,
+        "max": 200
+      }
+    },
+    "multi_image_min_fraction": 0.3,
+    "core_task_min_cases": 10,
+    "core_tasks": [
+      "image_description",
+      "color_recognition",
+      "ocr",
+      "counting",
+      "spatial_relationship",
+      "chart_reading",
+      "multi_image_comparison"
+    ],
+    "required_languages": [
+      "en",
+      "zh"
+    ],
+    "split": {
+      "algorithm": "sha256_task_stratified_v1",
+      "seed": 20260724,
+      "dev_calibration_percent": 20,
+      "formal_holdout_percent": 80
+    },
+    "cross_split_leakage_keys": [
+      "source_sample_id",
+      "source_record_sha256",
+      "media_rgb_sha256",
+      "prompt_template_instance_id"
+    ],
+    "sentinel_holdout_exclusion_keys": [
+      "source_sample_id",
+      "source_record_sha256",
+      "media_rgb_sha256",
+      "prompt_template_instance_id"
+    ],
+    "sentinel_source_suite_sha256": "7edd216a3e8b2d916456ed8baeaa8229e41da678c889857f7871ec5ad39c7d6c",
+    "sentinel_gate_lock_sha256": "cba09715d98f1c486bb1749fb7dca30d2b5032c20782eac8988aa7bfd4b982dd"
+  },
+  "oracle": {
+    "engine": "transformers_remote_code",
+    "transformers_version": "4.57.1",
+    "trust_remote_code": true,
+    "model_repo_id": "moonshotai/Kimi-K2.6",
+    "model_snapshot": "7eb5002f6aadc958aed6a9177b7ed26bb94011bb",
+    "model_identity": {
+      "vocab_size": 163840,
+      "config_sha256": "85825ca6e18cbe539eb83ee09eedfb3f4222265929f06e9f535a6d9364f55899",
+      "generation_config_sha256": "5431db52f431099f309ece737670e977de148f8cfd5340e920ff1f44d7cff596",
+      "weight_index_sha256": "00a982d005d6e39b25cfcb379a7e6d57f393fc0346e70892ea4271c259c0d1e3",
+      "tokenizer_files": {
+        "chat_template.jinja": "8bf859698fd4781c0e1e1c63ce74422aab27e53ccc5f47116317c64cda06132f",
+        "tiktoken.model": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103",
+        "tokenization_kimi.py": "2ab1ffb6f5c4380758bd8d9752ff1041c09024182676a4311528fbdf92fb9599",
+        "tokenizer_config.json": "12fcab43d2b6068f46769f5ff373960bf7c17a94d7abbc50e2491306b2f6cf58"
+      },
+      "processor_files": {
+        "kimi_k25_processor.py": "537d7a708e1654766fc628c99667bdb9364136d3541633d6522ac43cef9bfea0",
+        "kimi_k25_vision_processing.py": "498e20753c9aa6b6224ddbcd05b04deb7e987b76595bf5c28ee8583f33ebc375",
+        "media_utils.py": "77a6b1fed3580b0562443092928a0240c2989e3950377e93893952123ae48e3d",
+        "preprocessor_config.json": "0c43520fbcc076dacbffcf0273f0dfa0ee318ff9aa55537cf7f2788d906de7b2"
+      }
+    },
+    "generation": {
+      "do_sample": false,
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "seed": 0,
+      "thinking": false,
+      "eos_token_ids": [
+        163586
+      ],
+      "stop_at_eos": true
+    },
+    "allowed_max_positions": [
+      32,
+      64
+    ],
+    "long_answer_min_valid_positions": 32,
+    "teacher_forcing": "single_prefill_frozen_oracle_prefix_v1",
+    "valid_mask": "first_eos_inclusive_prefix_v1"
+  },
+  "minimum_thresholds": {
+    "processor_token_offset_grid_media_order_exact": true,
+    "catastrophic_failure_count_max": 0,
+    "lmdeploy_self_determinism_exact": true,
+    "stable_top1": {
+      "oracle_margin_min": 0.05,
+      "overall_min": 0.99,
+      "per_task_min": 0.95
+    },
+    "top20_overlap": {
+      "macro_min": 0.95,
+      "case_p05_min": 0.8
+    },
+    "full_logprob_nrmse": {
+      "macro_max": 0.02,
+      "case_p95_max": 0.05
+    },
+    "full_logprob_cosine": {
+      "macro_min": 0.999
+    },
+    "target_logprob_abs_error": {
+      "p95_max": 0.25,
+      "max": 1.0
+    },
+    "task_score_drop": {
+      "overall_max": 0.02,
+      "per_task_max": 0.05
+    },
+    "required_report_only_metrics": [
+      "kl",
+      "js",
+      "rank_correlation",
+      "sglang_cross_check"
+    ]
+  },
+  "aggregation": {
+    "case_weighting": "macro",
+    "task_weighting": "macro",
+    "metric_hierarchy": {
+      "macro": "position_mean_then_case_mean_then_task_mean",
+      "case_percentiles": "per_case_position_mean_then_case_population_percentile",
+      "target_logprob_p95": "per_case_position_p95_then_case_mean_then_task_mean",
+      "bootstrap": "stratified_task_case_resampling"
+    },
+    "percentile_method": "linear",
+    "bootstrap_samples": 10000,
+    "bootstrap_seed": 20260724
+  },
+  "required_inputs": [
+    "source_manifest",
+    "license_manifest",
+    "scorer_bundle",
+    "split_audit",
+    "calibration_artifact",
+    "qualification_thresholds",
+    "preholdout_lock"
+  ]
+}
