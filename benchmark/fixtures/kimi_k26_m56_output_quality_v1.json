@@ -1,0 +1,1315 @@
+{
+  "schema_version": "kimi-k26-m56-output-quality/1",
+  "gate_id": "Kimi-K2.6-M5.6",
+  "scope": "output_quality",
+  "suite_id": "kimi-k26-m56-output-quality-v1",
+  "fixture_sha256": "3e89a15dfc5092bef698c1a11b65bc37e6d0870229190a071022ca2e6a5c29ec",
+  "generation_contract": {
+    "engine": "lmdeploy.pytorch",
+    "tensor_parallel_size": 8,
+    "data_parallel_size": 1,
+    "expert_parallel_size": 1,
+    "prefill_mode": "eager",
+    "decode_mode": "eager",
+    "temperature": 0,
+    "do_sample": false,
+    "seed": 0,
+    "stream": false,
+    "thinking": false,
+    "num_repeats": 3,
+    "independent_session_per_run": true,
+    "max_new_tokens_limit": 512,
+    "eos_token_ids": [
+      163585,
+      163586
+    ],
+    "allowed_stop_reasons": [
+      "eos",
+      "length",
+      "explicit_stop"
+    ]
+  },
+  "category_counts": {
+    "basic_qa": 6,
+    "format_following": 6,
+    "chinese_generation": 4,
+    "english_generation": 3,
+    "long_output": 4,
+    "image_understanding": 5,
+    "boundary": 2
+  },
+  "selection_contract": {
+    "output_sentinel": {
+      "label": "OUTPUT_SENTINEL",
+      "case_ids": [
+        "basic.capital_china",
+        "basic.capital_france",
+        "basic.one_plus_one",
+        "basic.gpu_definition",
+        "format.exact_thumbsup",
+        "format.json_answer_42",
+        "format.two_lines_red_blue",
+        "long.inference_optimization_ten_points",
+        "image.single_red_color",
+        "image.multi_red_blue_order"
+      ],
+      "category_counts": {
+        "basic_qa": 4,
+        "format_following": 3,
+        "long_output": 1,
+        "image_understanding": 2
+      }
+    },
+    "cross_lifecycle": {
+      "case_ids": [
+        "basic.capital_china",
+        "format.json_answer_42",
+        "long.inference_optimization_ten_points",
+        "image.single_red_color",
+        "image.multi_red_blue_order"
+      ],
+      "fresh_engine_lifecycles": 2
+    }
+  },
+  "media_catalog": [
+    {
+      "media_id": "red_64x48",
+      "width": 64,
+      "height": 48,
+      "mode": "RGB",
+      "rgb_bytes": 9216,
+      "rgb_sha256": "411df082cf447fe02585e0dd436c7329aa880f38e26ce117268d690d5ce1a1a5",
+      "recipe": {
+        "type": "solid_rgb_v1",
+        "color": [
+          220,
+          30,
+          30
+        ]
+      },
+      "recipe_sha256": "1a4a8e62763514bc82d38828097a330814fe7ced61105d9e1f86aaec7ce36230"
+    },
+    {
+      "media_id": "blue_57x33",
+      "width": 57,
+      "height": 33,
+      "mode": "RGB",
+      "rgb_bytes": 5643,
+      "rgb_sha256": "73b233cda6ce05f738b834733077ed2116f13174eef17d1d4fc7dedb6e1f9b0f",
+      "recipe": {
+        "type": "solid_rgb_v1",
+        "color": [
+          20,
+          40,
+          220
+        ]
+      },
+      "recipe_sha256": "1007e5ef20e15710fbee27fbbd4337573240af83745840339b7397f8ad7d76cc"
+    },
+    {
+      "media_id": "checkerboard_80x60",
+      "width": 80,
+      "height": 60,
+      "mode": "RGB",
+      "rgb_bytes": 14400,
+      "rgb_sha256": "f8bcd76e9d67d371c5d2b2eb654f279aff50141d10b615ab19e08e459a4b8f30",
+      "recipe": {
+        "type": "checkerboard_v1",
+        "block_size": 8,
+        "colors": [
+          [
+            20,
+            20,
+            20
+          ],
+          [
+            235,
+            235,
+            235
+          ]
+        ]
+      },
+      "recipe_sha256": "da6568ad26c8b5acd6456730ec8ccce6a001e08a8b962a59f18a7c60dfc727cb"
+    },
+    {
+      "media_id": "xy_gradient_72x48",
+      "width": 72,
+      "height": 48,
+      "mode": "RGB",
+      "rgb_bytes": 10368,
+      "rgb_sha256": "ecaf4975d3ffb7b5f3b211b668e40eeee03f9bc0ea62e41d48669ce459b13881",
+      "recipe": {
+        "type": "xy_gradient_v1"
+      },
+      "recipe_sha256": "7c2aef9f1880c7edf0389d7abd3697cd47e09d1306c74fe0dc9eb4503ae0ba06"
+    },
+    {
+      "media_id": "batch_size_chart_160x112",
+      "width": 160,
+      "height": 112,
+      "mode": "RGB",
+      "rgb_bytes": 53760,
+      "rgb_sha256": "1befe3846ecf92b00600025e82e808161d2df51d6c3649fa30a3be3c7fb64b88",
+      "recipe": {
+        "type": "axis_chart_v1",
+        "background": [
+          255,
+          255,
+          255
+        ],
+        "axis_color": [
+          20,
+          20,
+          20
+        ],
+        "bar_color": [
+          65,
+          105,
+          210
+        ],
+        "bar_heights": [
+          18,
+          35,
+          52,
+          68
+        ],
+        "x_axis_label": "batch size",
+        "font": "ascii_5x7_v1",
+        "font_scale": 2
+      },
+      "recipe_sha256": "7d0db076b3f461c26456175541ff75bb722ad455a64a09c54b4e1edce3f84c83"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "basic.capital_china",
+      "category": "basic_qa",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "中国的首都是哪里？只回答城市名。",
+      "prompt_sha256": "21ff68c22cb796b46509e750e5c9e531fce278d3858772428f6ed3b2f42ab1e6",
+      "allow_blank_input": false,
+      "max_new_tokens": 16,
+      "scorer": {
+        "scorer_id": "exact_text_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "exact_text",
+            "expected": "北京",
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": true
+    },
+    {
+      "case_id": "basic.capital_france",
+      "category": "basic_qa",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "What is the capital of France? Answer with one word.",
+      "prompt_sha256": "06c008d3ea3ad613476854fc1073d46d7f3b20a38505bb9118021706cac2303a",
+      "allow_blank_input": false,
+      "max_new_tokens": 16,
+      "scorer": {
+        "scorer_id": "exact_text_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "exact_text",
+            "expected": "Paris",
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "basic.one_plus_one",
+      "category": "basic_qa",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "1+1 等于多少？只回答数字。",
+      "prompt_sha256": "0cb5ff6a62345514eb91bfec752b1e788baa23d85598bf46f16a6685e00741ea",
+      "allow_blank_input": false,
+      "max_new_tokens": 8,
+      "scorer": {
+        "scorer_id": "exact_integer_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "integer_equal",
+            "expected": 2,
+            "normalization": "strip",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "basic.boiling_point",
+      "category": "basic_qa",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "水在标准大气压下的沸点是多少摄氏度？",
+      "prompt_sha256": "790d7d6f8ccc12fd1c9dfb6c1d81275d69ac59509d86649d5895f3a1fdc017b5",
+      "allow_blank_input": false,
+      "max_new_tokens": 32,
+      "scorer": {
+        "scorer_id": "contains_any_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "contains_any",
+            "expected": [
+              "100",
+              "一百"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "basic.gpu_definition",
+      "category": "basic_qa",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "请用一句话解释 GPU 是什么。",
+      "prompt_sha256": "d571eab52a0ca6a3e77233410a2f94330c9027b401a247ea538909ab497efdc9",
+      "allow_blank_input": false,
+      "max_new_tokens": 64,
+      "scorer": {
+        "scorer_id": "zh_single_sentence_gpu_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "one_sentence",
+            "metric": "sentence_count_equal",
+            "expected": 1,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "gpu_concept",
+            "metric": "contains_any",
+            "expected": [
+              "图形处理器",
+              "图形处理单元",
+              "并行"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "basic.translate_distributed_inference",
+      "category": "basic_qa",
+      "input_kind": "text",
+      "language": "mixed",
+      "prompt": "Translate “distributed inference” into Chinese. 只回答译文。",
+      "prompt_sha256": "f67d62d77cc3cd451f310052d5e4310e3dc2885fc27ac452505ff36c69b7671d",
+      "allow_blank_input": false,
+      "max_new_tokens": 32,
+      "scorer": {
+        "scorer_id": "exact_text_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "exact_text",
+            "expected": "分布式推理",
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "format.exact_beijing",
+      "category": "format_following",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "只输出：北京",
+      "prompt_sha256": "612d7679777078135a9c7945c7c2117be88a664dd494f0b09a21dbade4e89551",
+      "allow_blank_input": false,
+      "max_new_tokens": 8,
+      "scorer": {
+        "scorer_id": "exact_text_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "format",
+            "metric": "exact_text",
+            "expected": "北京",
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "format.exact_42",
+      "category": "format_following",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "只输出数字 42",
+      "prompt_sha256": "5bf04800cbecf7132489b6ca724a150443803038d3dfcce069f9e940f945d4b7",
+      "allow_blank_input": false,
+      "max_new_tokens": 8,
+      "scorer": {
+        "scorer_id": "exact_integer_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "format",
+            "metric": "integer_equal",
+            "expected": 42,
+            "normalization": "strip",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "format.exact_thumbsup",
+      "category": "format_following",
+      "input_kind": "text",
+      "language": "und",
+      "prompt": "只输出一个 👍",
+      "prompt_sha256": "35eb425b211a38da857c3a8948a165e3fbd519a9328dd479d9f665a54cdd9af8",
+      "allow_blank_input": false,
+      "max_new_tokens": 8,
+      "scorer": {
+        "scorer_id": "exact_text_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "format",
+            "metric": "exact_text",
+            "expected": "👍",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "format.three_english_words",
+      "category": "format_following",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "Output exactly three English words and nothing else.",
+      "prompt_sha256": "2b4e1c25d3e9bd07484b724807560e2a70215b474ad86c92f42b21f7f43ec214",
+      "allow_blank_input": false,
+      "max_new_tokens": 16,
+      "scorer": {
+        "scorer_id": "three_english_words_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "word_count",
+            "metric": "word_count_equal",
+            "expected": 3,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "word_shape",
+            "metric": "regex_fullmatch",
+            "expected": "(?i)[a-z]+(?: [a-z]+){2}",
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "format.json_answer_42",
+      "category": "format_following",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "Output only this JSON object with the same typed value: {\"answer\": 42}",
+      "prompt_sha256": "4ecf08316de4798bd444e9902f624d0f0b1084b191f1d593c7fb3c8a78479f09",
+      "allow_blank_input": false,
+      "max_new_tokens": 32,
+      "scorer": {
+        "scorer_id": "json_exact_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "json",
+            "metric": "json_equal",
+            "expected": {
+              "answer": 42
+            },
+            "normalization": "json",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": true
+    },
+    {
+      "case_id": "format.two_lines_red_blue",
+      "category": "format_following",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "Output exactly two lines. The first line must be red and the second line must be blue.",
+      "prompt_sha256": "32e7074f1cb25c4cb2e41250784f5ade6d9463e2efa83c2087fb52e63a4119e8",
+      "allow_blank_input": false,
+      "max_new_tokens": 16,
+      "scorer": {
+        "scorer_id": "exact_lines_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "lines",
+            "metric": "exact_lines",
+            "expected": [
+              "red",
+              "blue"
+            ],
+            "normalization": "newline_strip",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "chinese.hangzhou_three_sentences",
+      "category": "chinese_generation",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "用三句话介绍杭州。",
+      "prompt_sha256": "0a79b8c6f7285a0b8d01eb1d6731905639df57f181e8710f9f80d03996689b23",
+      "allow_blank_input": false,
+      "max_new_tokens": 192,
+      "scorer": {
+        "scorer_id": "zh_three_sentences_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "sentence_count",
+            "metric": "sentence_count_equal",
+            "expected": 3,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "subject",
+            "metric": "contains_all",
+            "expected": [
+              "杭州"
+            ],
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "zh",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "chinese.technical_200_chars",
+      "category": "chinese_generation",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "写一段约 200 字的中文说明文，主题是大模型推理服务。",
+      "prompt_sha256": "647eb8c0bf1d28ddf78bee26683e46e531a642a8b4e86d2d1621a0e3f77cb265",
+      "allow_blank_input": false,
+      "max_new_tokens": 320,
+      "scorer": {
+        "scorer_id": "zh_approximately_200_chars_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "minimum_length",
+            "metric": "min_cjk_chars",
+            "expected": 160,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "maximum_length",
+            "metric": "max_cjk_chars",
+            "expected": 260,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "zh",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "chinese.meeting_notice",
+      "category": "chinese_generation",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "写一封简短会议通知，必须包含会议主题、时间和地点。",
+      "prompt_sha256": "305ae677ddd8d606c8491d78fb1e85e3cd3da03b6b9e192acb28e198d4c28bf2",
+      "allow_blank_input": false,
+      "max_new_tokens": 256,
+      "scorer": {
+        "scorer_id": "zh_meeting_notice_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "required_fields",
+            "metric": "contains_all",
+            "expected": [
+              "主题",
+              "时间",
+              "地点"
+            ],
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "zh",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "chinese.tensor_parallelism",
+      "category": "chinese_generation",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "用简体中文解释张量并行。",
+      "prompt_sha256": "eb29211bf1b20c4cba807f2bfbcb1d947d7dc411d15905680df94c293504f278",
+      "allow_blank_input": false,
+      "max_new_tokens": 256,
+      "scorer": {
+        "scorer_id": "zh_tensor_parallelism_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "concept",
+            "metric": "contains_all",
+            "expected": [
+              "张量",
+              "并行"
+            ],
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "zh",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "english.tensor_parallelism_paragraph",
+      "category": "english_generation",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "Explain tensor parallelism in one paragraph.",
+      "prompt_sha256": "2ecc3279bd2f84b06818b63ac29e73539561226cfbe12fe0b862876e7b6dc532",
+      "allow_blank_input": false,
+      "max_new_tokens": 256,
+      "scorer": {
+        "scorer_id": "en_tensor_parallelism_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "concept",
+            "metric": "contains_all",
+            "expected": [
+              "tensor",
+              "parallel"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "minimum_words",
+            "metric": "min_words",
+            "expected": 35,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "en",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "english.project_update",
+      "category": "english_generation",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "Write a short professional project update about completing an inference-engine integration.",
+      "prompt_sha256": "603073a068c662e7284f73fdc149a52c430589a02e937d92b4fe2a8dcd973670",
+      "allow_blank_input": false,
+      "max_new_tokens": 192,
+      "scorer": {
+        "scorer_id": "en_project_update_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "minimum_words",
+            "metric": "min_words",
+            "expected": 25,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "topic",
+            "metric": "contains_any",
+            "expected": [
+              "integration",
+              "inference",
+              "engine"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "en",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "english.kv_cache_summary",
+      "category": "english_generation",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "Summarize why KV cache matters for decoding.",
+      "prompt_sha256": "5fe2941c457dc47d96ecbc99228cbea503a00d028386aaac3f61b4aff6d27efc",
+      "allow_blank_input": false,
+      "max_new_tokens": 192,
+      "scorer": {
+        "scorer_id": "en_kv_cache_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "concept",
+            "metric": "contains_all",
+            "expected": [
+              "KV",
+              "cache",
+              "decod"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "en",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "long.chinese_technical_500_chars",
+      "category": "long_output",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "生成不少于 500 字的中文技术说明，主题是大模型推理中的张量并行、KV 缓存与批处理优化。",
+      "prompt_sha256": "1789d0b288b5554ebf3262ef8cffb8b65d35dac674042d6c36fed77ba48e8b12",
+      "allow_blank_input": false,
+      "max_new_tokens": 512,
+      "scorer": {
+        "scorer_id": "long_zh_technical_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "minimum_length",
+            "metric": "min_cjk_chars",
+            "expected": 500,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "concepts",
+            "metric": "contains_all",
+            "expected": [
+              "张量并行",
+              "KV",
+              "批处理"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "zh",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "long.english_twelve_lines",
+      "category": "long_output",
+      "input_kind": "text",
+      "language": "en",
+      "prompt": "Write an English technical essay of at least 12 non-empty lines about reliable distributed inference.",
+      "prompt_sha256": "2a1aed6f27a2b3802b04150131006f9469f6bb67b3e90d5494580d70d072674a",
+      "allow_blank_input": false,
+      "max_new_tokens": 512,
+      "scorer": {
+        "scorer_id": "long_en_twelve_lines_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "minimum_lines",
+            "metric": "min_lines",
+            "expected": 12,
+            "normalization": "newline_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "minimum_words",
+            "metric": "min_words",
+            "expected": 100,
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "en",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "long.python_bubble_sort",
+      "category": "long_output",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "编写一个完整的 Python 冒泡排序函数，并解释时间复杂度和空间复杂度。",
+      "prompt_sha256": "1ab37dab0872ee412018e011ded9371fcbd37e753e505cf8f2259623ab2a5e7f",
+      "allow_blank_input": false,
+      "max_new_tokens": 512,
+      "scorer": {
+        "scorer_id": "long_python_bubble_sort_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "code_contract",
+            "metric": "contains_all",
+            "expected": [
+              "def ",
+              "return",
+              "O(n"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "code_fence",
+            "metric": "balanced_code_fence",
+            "expected": true,
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "long.inference_optimization_ten_points",
+      "category": "long_output",
+      "input_kind": "text",
+      "language": "zh",
+      "prompt": "分 10 点介绍大模型推理优化方法。必须编号为 1 到 10，并为每点给出简短解释。",
+      "prompt_sha256": "9b55fcbd823b810b3188656a76c11e5de29a1fdfad843912f39999fbc4d113f3",
+      "allow_blank_input": false,
+      "max_new_tokens": 512,
+      "scorer": {
+        "scorer_id": "long_ten_numbered_points_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "numbered_points",
+            "metric": "numbered_item_count",
+            "expected": 10,
+            "normalization": "newline_strip",
+            "score_axis": "format",
+            "hard": true
+          },
+          {
+            "rule_id": "topic",
+            "metric": "contains_any",
+            "expected": [
+              "并行",
+              "缓存",
+              "量化",
+              "批处理"
+            ],
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "zh",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": true
+    },
+    {
+      "case_id": "image.single_red_color",
+      "category": "image_understanding",
+      "input_kind": "single_image",
+      "language": "zh",
+      "prompt": "这张图片的主色是什么？只回答颜色。",
+      "prompt_sha256": "ae7e68b5445d7298470456459cf6ba5cccf728e98d62577e23721765f0ea0950",
+      "allow_blank_input": false,
+      "max_new_tokens": 16,
+      "scorer": {
+        "scorer_id": "exact_text_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "exact_text",
+            "expected": "红色",
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [
+        {
+          "media_id": "red_64x48",
+          "recipe_sha256": "1a4a8e62763514bc82d38828097a330814fe7ced61105d9e1f86aaec7ce36230",
+          "rgb_sha256": "411df082cf447fe02585e0dd436c7329aa880f38e26ce117268d690d5ce1a1a5"
+        }
+      ],
+      "media_order": [
+        "red_64x48"
+      ],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": true
+    },
+    {
+      "case_id": "image.single_checkerboard_pattern",
+      "category": "image_understanding",
+      "input_kind": "single_image",
+      "language": "zh",
+      "prompt": "这张图片是什么图案？",
+      "prompt_sha256": "de39aa89fdb495342f05aeb58eab51f528082b5859ef4202ce1984d3d31e2782",
+      "allow_blank_input": false,
+      "max_new_tokens": 32,
+      "scorer": {
+        "scorer_id": "contains_any_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "contains_any",
+            "expected": [
+              "棋盘格",
+              "方格"
+            ],
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [
+        {
+          "media_id": "checkerboard_80x60",
+          "recipe_sha256": "da6568ad26c8b5acd6456730ec8ccce6a001e08a8b962a59f18a7c60dfc727cb",
+          "rgb_sha256": "f8bcd76e9d67d371c5d2b2eb654f279aff50141d10b615ab19e08e459a4b8f30"
+        }
+      ],
+      "media_order": [
+        "checkerboard_80x60"
+      ],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "image.single_chart_x_axis",
+      "category": "image_understanding",
+      "input_kind": "single_image",
+      "language": "mixed",
+      "prompt": "读取图片中的 x 轴名称。只回答轴名称。",
+      "prompt_sha256": "b7e17aea3cbc1825ba589049ec63add141c5ef1b4e972111ab6bb1cb3eb11476",
+      "allow_blank_input": false,
+      "max_new_tokens": 32,
+      "scorer": {
+        "scorer_id": "contains_any_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "contains_any",
+            "expected": [
+              "batch size",
+              "batch_size",
+              "批大小"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [
+        {
+          "media_id": "batch_size_chart_160x112",
+          "recipe_sha256": "7d0db076b3f461c26456175541ff75bb722ad455a64a09c54b4e1edce3f84c83",
+          "rgb_sha256": "1befe3846ecf92b00600025e82e808161d2df51d6c3649fa30a3be3c7fb64b88"
+        }
+      ],
+      "media_order": [
+        "batch_size_chart_160x112"
+      ],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "image.multi_red_blue_order",
+      "category": "image_understanding",
+      "input_kind": "multi_image",
+      "language": "zh",
+      "prompt": "按第一张、第二张顺序回答两张图片的主色，只输出两个颜色。",
+      "prompt_sha256": "6b1f24dba8d14820e19547851210195edab8d132cafe3bf0ac5c45274210ce6c",
+      "allow_blank_input": false,
+      "max_new_tokens": 32,
+      "scorer": {
+        "scorer_id": "ordered_answers_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer_order",
+            "metric": "ordered_answers",
+            "expected": [
+              "红色",
+              "蓝色"
+            ],
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "output_shape",
+            "metric": "regex_fullmatch",
+            "expected": "红色(?:\\s*[,，、/;；]\\s*|\\s+)蓝色",
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [
+        {
+          "media_id": "red_64x48",
+          "recipe_sha256": "1a4a8e62763514bc82d38828097a330814fe7ced61105d9e1f86aaec7ce36230",
+          "rgb_sha256": "411df082cf447fe02585e0dd436c7329aa880f38e26ce117268d690d5ce1a1a5"
+        },
+        {
+          "media_id": "blue_57x33",
+          "recipe_sha256": "1007e5ef20e15710fbee27fbbd4337573240af83745840339b7397f8ad7d76cc",
+          "rgb_sha256": "73b233cda6ce05f738b834733077ed2116f13174eef17d1d4fc7dedb6e1f9b0f"
+        }
+      ],
+      "media_order": [
+        "red_64x48",
+        "blue_57x33"
+      ],
+      "output_sentinel": true,
+      "cross_lifecycle_representative": true
+    },
+    {
+      "case_id": "image.multi_gradient_checkerboard_order",
+      "category": "image_understanding",
+      "input_kind": "multi_image",
+      "language": "zh",
+      "prompt": "第一张是渐变图，第二张是棋盘格。哪一张是棋盘格？只回答第一张或第二张。",
+      "prompt_sha256": "89025a4801f24bdb74f239194fea7a978da5add12fa01fb6a1fe22289f03c561",
+      "allow_blank_input": false,
+      "max_new_tokens": 16,
+      "scorer": {
+        "scorer_id": "exact_text_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "answer",
+            "metric": "exact_text",
+            "expected": "第二张",
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [
+        {
+          "media_id": "xy_gradient_72x48",
+          "recipe_sha256": "7c2aef9f1880c7edf0389d7abd3697cd47e09d1306c74fe0dc9eb4503ae0ba06",
+          "rgb_sha256": "ecaf4975d3ffb7b5f3b211b668e40eeee03f9bc0ea62e41d48669ce459b13881"
+        },
+        {
+          "media_id": "checkerboard_80x60",
+          "recipe_sha256": "da6568ad26c8b5acd6456730ec8ccce6a001e08a8b962a59f18a7c60dfc727cb",
+          "rgb_sha256": "f8bcd76e9d67d371c5d2b2eb654f279aff50141d10b615ab19e08e459a4b8f30"
+        }
+      ],
+      "media_order": [
+        "xy_gradient_72x48",
+        "checkerboard_80x60"
+      ],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "boundary.blank_spaces",
+      "category": "boundary",
+      "input_kind": "text",
+      "language": "und",
+      "prompt": "   ",
+      "prompt_sha256": "0aad7da77d2ed59c396c99a74e49f3a4524dcdbcb5163251b1433d640247aeb4",
+      "allow_blank_input": true,
+      "max_new_tokens": 64,
+      "scorer": {
+        "scorer_id": "blank_input_policy_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "blank_policy",
+            "metric": "blank_input_policy",
+            "expected": [
+              "explicit_rejection",
+              "nonempty_normalized_response"
+            ],
+            "normalization": "unicode_nfc_strip",
+            "score_axis": "task",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    },
+    {
+      "case_id": "boundary.mixed_unicode",
+      "category": "boundary",
+      "input_kind": "text",
+      "language": "mixed",
+      "prompt": "请解释这句话：GPU 🚀 提速 2×，but latency matters—对吗？",
+      "prompt_sha256": "f913d2b1979bfda71d4e7f41725d3461d4e4b548d00ac236056d2b516708562b",
+      "allow_blank_input": false,
+      "max_new_tokens": 128,
+      "scorer": {
+        "scorer_id": "mixed_unicode_response_v1",
+        "aggregation": "all_hard_rules",
+        "rules": [
+          {
+            "rule_id": "topic",
+            "metric": "contains_any",
+            "expected": [
+              "GPU",
+              "latency",
+              "延迟"
+            ],
+            "normalization": "unicode_nfc_casefold",
+            "score_axis": "task",
+            "hard": true
+          },
+          {
+            "rule_id": "language",
+            "metric": "language",
+            "expected": "mixed",
+            "normalization": "none",
+            "score_axis": "format",
+            "hard": true
+          }
+        ]
+      },
+      "media": [],
+      "media_order": [],
+      "output_sentinel": false,
+      "cross_lifecycle_representative": false
+    }
+  ]
+}
