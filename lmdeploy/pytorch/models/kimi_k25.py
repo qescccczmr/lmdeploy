@@ -366,9 +366,32 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
 
         return model_inputs
 
-    def support_cuda_graph(self, *args, **kwargs):
-        """The Kimi compatibility path currently stays in eager mode."""
-        return False
+    def support_cuda_graph(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        past_key_values: list[list[torch.Tensor]],
+        attn_metadata: Any = None,
+        inputs_embeds: torch.Tensor = None,
+        pixel_values: torch.Tensor = None,
+        grid_thws: torch.Tensor = None,
+        image_mask: torch.Tensor = None,
+        **kwargs,
+    ):
+        """Capture only text decode; media and embedding prefill stay eager."""
+        if inputs_embeds is not None or any(value is not None for value in (pixel_values, grid_thws, image_mask)):
+            return False
+        if any(kwargs.get(key) is not None for key in self._UNSUPPORTED_MULTIMODAL_FORWARD_KEYS):
+            return False
+        return CudaGraphMixin.support_cuda_graph(
+            self,
+            input_ids=input_ids,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            attn_metadata=attn_metadata,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
 
     @classmethod
     def rename_weight(cls, name: str) -> str:

@@ -275,8 +275,27 @@ def test_text_wrapper_fails_closed_for_multimodal_inputs(tiny_model):
         )
 
 
-def test_text_wrapper_does_not_claim_cuda_graph_support(tiny_model):
-    assert tiny_model.support_cuda_graph() is False
+@pytest.mark.parametrize(
+    ('is_decoding', 'pixel_values', 'expected'),
+    [
+        (False, None, False),
+        (False, torch.zeros(1), False),
+        (True, None, True),
+        (True, torch.zeros(1), False),
+    ],
+)
+def test_wrapper_supports_cuda_graph_for_text_decode_only(tiny_model, is_decoding, pixel_values, expected):
+    context = SimpleNamespace(global_is_decoding=lambda: is_decoding)
+    with step_ctx_manager(tiny_model.ctx_mgr), tiny_model.ctx_mgr.context(context):
+        supported = tiny_model.support_cuda_graph(
+            input_ids=torch.tensor([[1]]),
+            position_ids=torch.tensor([[0]]),
+            past_key_values=[],
+            attn_metadata=SimpleNamespace(is_decoding=is_decoding),
+            pixel_values=pixel_values,
+        )
+
+    assert supported is expected
 
 
 class _TinyVisionTower(nn.Module):
