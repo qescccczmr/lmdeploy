@@ -732,6 +732,8 @@ class DeepseekV2MoE(nn.Module):
         dist_config = dist_ctx.dist_config
         dp = dist_config.dp
         world_size = dist_config.world_size
+        self._shared_expert_tp_group = getattr(
+            getattr(dist_ctx, 'mlp_tp_group', None), 'gpu_group', None)
         moe_all_reduce = dp > 1 and dist_config.tp > 1
         if get_dist_manager().current_context().dist_config.enable_eplb:
             eplb_dispatch_info = EPLBManager.get_dispatch_info(
@@ -790,18 +792,58 @@ class DeepseekV2MoE(nn.Module):
             topk_ids,
         )
 
+        shared_states = None
+        if self.shared_experts is not None:
+            shared_states = self.shared_experts(hidden_states)
+            shared_states = shared_states.reshape(batch_size, sequence_length,
+                                                  -1)
+        out_states = out_states.reshape(batch_size, sequence_length, -1)
+        out_states = self._combine_expert_outputs(out_states, shared_states)
+
+        return out_states
+
+    def _combine_expert_outputs(
+        self,
+        out_states: torch.Tensor,
+        shared_states: torch.Tensor | None,
+    ):
+        """Combine routed and shared outputs under their distribution contract."""
         output_dtype = out_states.dtype
         tp_reduce_dtype = getattr(self.experts, 'tp_reduce_dtype', None)
         use_promoted_tp_reduce = self._all_reduce and tp_reduce_dtype is not None
+
+        # DeepEP dispatch/combine returns a complete routed result to each
+        # source rank, while the shared expert remains TP-sharded for DP=1.
+        # Reducing their sum would therefore multiply the routed result by EP.
+        if getattr(self.experts, 'ep', 1) > 1:
+            if shared_states is None:
+                return out_states
+            if use_promoted_tp_reduce:
+                out_states = out_states.to(tp_reduce_dtype)
+                shared_states = shared_states.to(tp_reduce_dtype)
+            if self._all_reduce:
+                # moe_tp is one under pure EP, so its process group cannot be
+                # used to reduce the attention/MLP-TP shared expert shards.
+                if self._shared_expert_tp_group is None:
+                    raise RuntimeError(
+                        'EP shared-expert reduction requires an MLP TP process group')
+                dist.all_reduce(
+                    shared_states,
+                    group=self._shared_expert_tp_group,
+                )
+            if use_promoted_tp_reduce:
+                out_states += shared_states
+                return out_states.to(output_dtype)
+            out_states += shared_states
+            return out_states
+
         if use_promoted_tp_reduce:
             out_states = out_states.to(tp_reduce_dtype)
 
-        if self.shared_experts is not None:
-            shared_states = self.shared_experts(hidden_states)
+        if shared_states is not None:
             if use_promoted_tp_reduce:
                 shared_states = shared_states.to(tp_reduce_dtype)
             out_states += shared_states
-        out_states = out_states.reshape(batch_size, sequence_length, -1)
 
         if self._all_reduce:
             if use_promoted_tp_reduce:
@@ -1083,13 +1125,10 @@ class DeepseekV2DecoderLayer(nn.Module):
         # yield for (+share) comb_wait, (+share) attn0
         yield
         out_hidden_states = out_state['hidden_states'].view(hidden_shape)
-        if shared_states is not None:
-            out_hidden_states += shared_states
-        elif self.mlp.shared_experts is not None:
+        if shared_states is None and self.mlp.shared_experts is not None:
             shared_states = self.mlp.shared_experts(hidden_states)
-            out_hidden_states += shared_states
-        else:
-            pass
+        out_hidden_states = self.mlp._combine_expert_outputs(
+            out_hidden_states, shared_states)
         out_hidden_states = out_hidden_states.reshape(batch_size, sequence_length, -1)
         outputs = (out_hidden_states, residual)
         return outputs
