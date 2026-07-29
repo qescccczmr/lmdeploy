@@ -1,10 +1,10 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-"""Eager compressed-tensors W4A16 routed experts.
+"""Compressed-tensors W4A16 routed-expert weights and eager TP runtime.
 
 The checkpoint layout is kept intact: INT4 codes are packed along the logical
 K dimension into int32 words and every 32 values share one BF16 scale.  This
-module only takes exact TP views; it never materializes persistent BF16 expert
-weights.
+module only takes exact TP or EP-local views; it never materializes persistent
+BF16 expert weights.
 """
 
 from itertools import product
@@ -14,7 +14,7 @@ from torch import nn
 
 from lmdeploy.pytorch.backends import OpType, get_backend
 from lmdeploy.pytorch.config import TPMode
-from lmdeploy.pytorch.distributed import get_dist_manager, get_tp_world_rank
+from lmdeploy.pytorch.distributed import get_dist_manager, get_ep_world_rank, get_tp_world_rank
 
 from .base import FusedMoEBase, MoeType, moe_gather_inputs, moe_reduce, update_dims
 
@@ -26,7 +26,7 @@ _PART_DTYPES = {
 
 
 class CompressedTensorsMoEWeights(nn.Module):
-    """TP-local checkpoint-layout parameters for one fused MoE projection."""
+    """Rank-local checkpoint-layout parameters for one fused MoE projection."""
 
     def __init__(
         self,
@@ -51,6 +51,19 @@ class CompressedTensorsMoEWeights(nn.Module):
                 'MoE dimensions and number of experts must be positive')
 
         tp_world, tp_rank = get_tp_world_rank('moe')
+        ep_world, ep_rank = get_ep_world_rank()
+        if ep_world <= 0 or not 0 <= ep_rank < ep_world:
+            raise ValueError(
+                f'Invalid EP world/rank pair: world={ep_world}, rank={ep_rank}')
+        if num_experts % ep_world != 0:
+            raise ValueError(
+                f'num_experts={num_experts} is not divisible by EP={ep_world}')
+        num_local_experts = num_experts // ep_world
+        first_local_expert = ep_rank * num_local_experts
+        expert_list = list(
+            range(first_local_expert,
+                  first_local_expert + num_local_experts))
+
         if ffn_dim % tp_world != 0:
             raise ValueError(
                 f'ffn_dim={ffn_dim} is not divisible by MoE TP={tp_world}')
@@ -69,7 +82,16 @@ class CompressedTensorsMoEWeights(nn.Module):
                 f'MoE dimensions must preserve INT4 pack-factor={pack_factor} boundaries'
             )
 
+        # Keep ``num_experts`` as the global router domain for compatibility.
+        # Parameters, loader destinations and completeness are rank-local.
         self.num_experts = num_experts
+        self.global_num_experts = num_experts
+        self.num_local_experts = num_local_experts
+        self.expert_list = expert_list
+        self.expert_map = {
+            global_expert_id: local_slot
+            for local_slot, global_expert_id in enumerate(expert_list)
+        }
         self.hidden_dim = hidden_dim
         self.global_ffn_dim = ffn_dim
         self.local_ffn_dim = local_ffn_dim
@@ -79,20 +101,22 @@ class CompressedTensorsMoEWeights(nn.Module):
         self.pack_factor = pack_factor
         self.tp_world = tp_world
         self.tp_rank = tp_rank
+        self.ep_world = ep_world
+        self.ep_rank = ep_rank
         self._loaded_parts: set[tuple[int, str, str]] = set()
 
         if weight_type == 'gate_up':
-            packed_shape = (num_experts, 2 * local_ffn_dim,
+            packed_shape = (num_local_experts, 2 * local_ffn_dim,
                             hidden_dim // pack_factor)
-            scale_shape = (num_experts, 2 * local_ffn_dim,
+            scale_shape = (num_local_experts, 2 * local_ffn_dim,
                            hidden_dim // group_size)
-            logical_shape = (num_experts, 2, 2)
+            logical_shape = (num_local_experts, 2, 2)
         else:
-            packed_shape = (num_experts, hidden_dim,
+            packed_shape = (num_local_experts, hidden_dim,
                             local_ffn_dim // pack_factor)
-            scale_shape = (num_experts, hidden_dim,
+            scale_shape = (num_local_experts, hidden_dim,
                            local_ffn_dim // group_size)
-            logical_shape = (num_experts, 2)
+            logical_shape = (num_local_experts, 2)
 
         self._register_checkpoint_parameter('weight_packed', packed_shape,
                                             torch.int32, device)
@@ -156,16 +180,16 @@ class CompressedTensorsMoEWeights(nn.Module):
             return self.local_ffn_dim, self.hidden_dim
         return self.hidden_dim, self.local_ffn_dim
 
-    def _destination(self, param: nn.Parameter, expert_id: int, shard_id: str,
-                     part: str):
+    def _destination(self, param: nn.Parameter, local_expert_id: int,
+                     shard_id: str, part: str):
         if self.weight_type == 'gate_up':
             if part == 'weight_shape':
                 shape_slot = 0 if shard_id == 'gate' else 1
-                return param.data[expert_id, shape_slot]
+                return param.data[local_expert_id, shape_slot]
             shard_offset = 0 if shard_id == 'gate' else self.local_ffn_dim
-            return param.data[expert_id,
+            return param.data[local_expert_id,
                               shard_offset:shard_offset + self.local_ffn_dim]
-        return param.data[expert_id]
+        return param.data[local_expert_id]
 
     def _take_tp_shard(self, loaded_weight: torch.Tensor, shard_id: str,
                        part: str):
@@ -188,9 +212,13 @@ class CompressedTensorsMoEWeights(nn.Module):
         expert_id: int,
         shard_id: str,
     ):
-        """Validate one checkpoint tensor and copy its exact local TP view."""
+        """Validate and copy one checkpoint tensor owned by this rank."""
         part = getattr(param, '_weight_type', None)
         self._validate_loader_key(expert_id, shard_id, part)
+        local_expert_id = self.expert_map.get(expert_id)
+        if local_expert_id is None:
+            return
+
         if loaded_weight.dtype != _PART_DTYPES[part]:
             raise ValueError(
                 f'{shard_id}.{part} must have dtype {_PART_DTYPES[part]}, got {loaded_weight.dtype}'
@@ -222,7 +250,7 @@ class CompressedTensorsMoEWeights(nn.Module):
                 f'shard={shard_id}, part={part}')
 
         local_weight = self._take_tp_shard(loaded_weight, shard_id, part)
-        destination = self._destination(param, expert_id, shard_id, part)
+        destination = self._destination(param, local_expert_id, shard_id, part)
         if tuple(local_weight.shape) != tuple(destination.shape):
             raise RuntimeError(
                 f'Internal TP shard shape mismatch: source={tuple(local_weight.shape)}, '
@@ -231,10 +259,9 @@ class CompressedTensorsMoEWeights(nn.Module):
         self._loaded_parts.add(key)
 
     def validate_complete(self):
-        """Reject inference unless every expert projection triplet was loaded."""
+        """Reject inference unless every local projection triplet was loaded."""
         expected = set(
-            product(range(self.num_experts), self._expected_shards(),
-                    _PART_DTYPES))
+            product(self.expert_list, self._expected_shards(), _PART_DTYPES))
         missing = sorted(expected - self._loaded_parts)
         unexpected = sorted(self._loaded_parts - expected)
         if missing or unexpected:

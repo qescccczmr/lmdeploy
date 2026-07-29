@@ -47,8 +47,14 @@ def _make_weights(monkeypatch,
                   rank,
                   weight_type,
                   num_experts=1,
+                  tp_size=_TP,
+                  ep_size=1,
+                  ep_rank=0,
                   device=torch.device('cpu')):
-    monkeypatch.setattr(ct_moe, 'get_tp_world_rank', lambda group: (_TP, rank))
+    monkeypatch.setattr(ct_moe, 'get_tp_world_rank',
+                        lambda group: (tp_size, rank))
+    monkeypatch.setattr(ct_moe, 'get_ep_world_rank',
+                        lambda: (ep_size, ep_rank))
     return CompressedTensorsMoEWeights(
         num_experts=num_experts,
         hidden_dim=_HIDDEN_DIM,
@@ -204,6 +210,113 @@ def test_parameters_keep_checkpoint_layout_without_full_bf16_weights(
         floating = [(name, param) for name, param in module.named_parameters()
                     if param.is_floating_point()]
         assert [name for name, _ in floating] == ['weight_scale']
+
+
+@pytest.mark.parametrize(
+    'weight_type,expected_packed,expected_scale,expected_logical',
+    [
+        ('gate_up', (2, 2 * _FFN_DIM, _HIDDEN_DIM // 8),
+         (2, 2 * _FFN_DIM, _HIDDEN_DIM // 32), (2, 2, 2)),
+        ('down', (2, _HIDDEN_DIM, _FFN_DIM // 8),
+         (2, _HIDDEN_DIM, _FFN_DIM // 32), (2, 2)),
+    ],
+)
+def test_ep_weights_allocate_only_contiguous_local_experts(
+        monkeypatch, weight_type, expected_packed, expected_scale,
+        expected_logical):
+    weights = _make_weights(monkeypatch,
+                            rank=0,
+                            weight_type=weight_type,
+                            num_experts=16,
+                            tp_size=1,
+                            ep_size=8,
+                            ep_rank=3)
+
+    assert weights.global_num_experts == 16
+    assert weights.num_local_experts == 2
+    assert weights.expert_list == [6, 7]
+    assert weights.expert_map == {6: 0, 7: 1}
+    assert weights.weight_packed.shape == expected_packed
+    assert weights.weight_scale.shape == expected_scale
+    assert weights.weight_shape.shape == expected_logical
+
+
+@pytest.mark.parametrize('weight_type,shards', [
+    ('gate_up', ('gate', 'up')),
+    ('down', ('down', )),
+])
+def test_ep_loader_maps_global_experts_skips_foreign_and_checks_local_complete(
+        monkeypatch, weight_type, shards):
+    weights = _make_weights(monkeypatch,
+                            rank=0,
+                            weight_type=weight_type,
+                            num_experts=16,
+                            tp_size=1,
+                            ep_size=8,
+                            ep_rank=3)
+
+    # Checkpoint traversal visits every global expert on every rank.  Foreign
+    # tensors must be ignored and must not participate in completeness.
+    for shard_id in shards:
+        for part, value in _projection_parts(shard_id).items():
+            _load_part(weights, 5, shard_id, part, value)
+            _load_part(weights, 8, shard_id, part, value)
+    assert weights._loaded_parts == set()
+    assert torch.all(weights.weight_shape == -1)
+
+    parts_by_expert = {}
+    for expert_id in weights.expert_list:
+        parts_by_shard = {}
+        for shard_index, shard_id in enumerate(shards):
+            parts = _projection_parts(
+                shard_id,
+                offset=expert_id * 100000 + shard_index * 10000)
+            parts_by_shard[shard_id] = parts
+            for part, value in parts.items():
+                _load_part(weights, expert_id, shard_id, part, value)
+        parts_by_expert[expert_id] = parts_by_shard
+        if expert_id == weights.expert_list[0]:
+            missing = len(shards) * len(ct_moe._PART_DTYPES)
+            with pytest.raises(RuntimeError, match=fr'missing={missing}'):
+                weights.validate_complete()
+
+    weights.validate_complete()
+    for global_expert_id, local_slot in weights.expert_map.items():
+        parts_by_shard = parts_by_expert[global_expert_id]
+        if weight_type == 'gate_up':
+            gate = parts_by_shard['gate']
+            up = parts_by_shard['up']
+            assert torch.equal(weights.weight_packed[local_slot],
+                               torch.cat((gate['weight_packed'],
+                                          up['weight_packed'])))
+            assert torch.equal(weights.weight_scale[local_slot],
+                               torch.cat((gate['weight_scale'],
+                                          up['weight_scale'])))
+            assert torch.equal(
+                weights.weight_shape[local_slot],
+                torch.tensor([[_FFN_DIM, _HIDDEN_DIM],
+                              [_FFN_DIM, _HIDDEN_DIM]],
+                             dtype=torch.int32))
+        else:
+            down = parts_by_shard['down']
+            assert torch.equal(weights.weight_packed[local_slot],
+                               down['weight_packed'])
+            assert torch.equal(weights.weight_scale[local_slot],
+                               down['weight_scale'])
+            assert torch.equal(
+                weights.weight_shape[local_slot],
+                torch.tensor([_HIDDEN_DIM, _FFN_DIM], dtype=torch.int32))
+
+
+def test_ep_weights_reject_uneven_expert_ownership(monkeypatch):
+    with pytest.raises(ValueError, match='num_experts=15.*EP=8'):
+        _make_weights(monkeypatch,
+                      rank=0,
+                      weight_type='down',
+                      num_experts=15,
+                      tp_size=1,
+                      ep_size=8,
+                      ep_rank=0)
 
 
 def test_builder_and_async_paths_fail_closed(monkeypatch):
