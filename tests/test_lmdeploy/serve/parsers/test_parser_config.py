@@ -48,3 +48,41 @@ def test_response_parser_set_parsers_accepts_registered_names(default_response_p
 
     assert default_response_parser_cls.reasoning_parser_cls is ReasoningParserManager.get('default')
     assert default_response_parser_cls.tool_parser_cls is ToolParserManager.get('interns2-preview')
+
+
+def test_response_parser_accepts_thinking_alias_disabled(default_response_parser_cls):
+    from lmdeploy.serve.openai.protocol import ChatCompletionRequest
+
+    default_response_parser_cls.set_parsers(reasoning_parser_name='default')
+    request = ChatCompletionRequest(
+        model='moonshotai/Kimi-K2.6',
+        messages=[],
+        chat_template_kwargs={'thinking': False},
+    )
+
+    parser = default_response_parser_cls(request)
+    content, tool_calls, reasoning_content = parser.parse_complete('北京')
+
+    assert parser.enable_thinking is False
+    assert content == '北京'
+    assert tool_calls is None
+    assert reasoning_content is None
+
+
+def test_response_parser_accepts_thinking_alias_enabled(default_response_parser_cls):
+    from lmdeploy.serve.openai.protocol import ChatCompletionRequest
+
+    default_response_parser_cls.set_parsers(reasoning_parser_name='default')
+    request = ChatCompletionRequest(
+        model='moonshotai/Kimi-K2.6',
+        messages=[],
+        chat_template_kwargs={'thinking': True},
+    )
+
+    parser = default_response_parser_cls(request)
+    content, tool_calls, reasoning_content = parser.parse_complete('分析过程</think>最终答案')
+
+    assert parser.enable_thinking is True
+    assert content == '最终答案'
+    assert tool_calls is None
+    assert reasoning_content == '分析过程'
