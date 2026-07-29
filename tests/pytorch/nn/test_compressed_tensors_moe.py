@@ -319,7 +319,7 @@ def test_ep_weights_reject_uneven_expert_ownership(monkeypatch):
                       ep_rank=0)
 
 
-def test_builder_and_async_paths_fail_closed(monkeypatch):
+def test_builder_accepts_ep_and_passes_layer_index(monkeypatch):
     quant_config = SimpleNamespace(
         bits=4,
         group_size=32,
@@ -327,17 +327,108 @@ def test_builder_and_async_paths_fail_closed(monkeypatch):
     )
     build_context = SimpleNamespace(quant_config=quant_config)
     monkeypatch.setattr(moe, 'get_build_model_context', lambda: build_context)
+    captured = {}
 
-    with pytest.raises(RuntimeError, match='expert parallelism'):
-        moe.build_fused_moe(
-            hidden_dim=64,
-            ffn_dim=64,
-            num_experts=4,
-            top_k=2,
-            quant_config={},
-            enable_ep=True,
-            prefix='model.layers.0.mlp.experts',
-        )
+    def fake_w4a16(**kwargs):
+        captured.update(kwargs)
+        return 'w4a16'
 
-    with pytest.raises(NotImplementedError, match='eager execution'):
+    monkeypatch.setattr(ct_moe, 'FusedMoEW4A16', fake_w4a16)
+    result = moe.build_fused_moe(
+        hidden_dim=64,
+        ffn_dim=64,
+        num_experts=4,
+        top_k=2,
+        quant_config={},
+        enable_ep=True,
+        layer_idx=7,
+        prefix='model.layers.0.mlp.experts',
+    )
+
+    assert result == 'w4a16'
+    assert captured['layer_idx'] == 7
+
+
+def test_async_path_fails_closed():
+    with pytest.raises(NotImplementedError,
+                       match='synchronous eager execution'):
         FusedMoEW4A16.wait(None, {})
+
+
+def test_ep_layer_builds_deepep_impl_and_local_weights(monkeypatch):
+    calls = {}
+    ep_group = object()
+    dist_config = SimpleNamespace(
+        dp=1,
+        ep=8,
+        enable_eplb=False,
+        enable_microbatch=False,
+    )
+    dist_ctx = SimpleNamespace(dist_config=dist_config,
+                               ep_gpu_group=ep_group)
+
+    class FakeBuilder:
+
+        @staticmethod
+        def build(**kwargs):
+            calls['builder'] = kwargs
+            return object()
+
+    class FakeBackend:
+
+        @staticmethod
+        def get_layer_impl_builder(op_type):
+            calls['op_type'] = op_type
+            return FakeBuilder
+
+    def fake_init_dist_args(self, all_reduce):
+        self.ep = 8
+        self.tp = 1
+        self.tp_rank = 0
+        self.tp_mode = ct_moe.TPMode.DEFAULT
+        self.all_reduce = False
+        self.tp_group = None
+        self.gather_group = None
+
+    monkeypatch.setattr(FusedMoEW4A16, 'init_dist_args',
+                        fake_init_dist_args)
+    monkeypatch.setattr(
+        ct_moe,
+        'get_dist_manager',
+        lambda: SimpleNamespace(current_context=lambda: dist_ctx),
+    )
+    monkeypatch.setattr(ct_moe, 'get_build_model_context',
+                        lambda: SimpleNamespace(
+                            deep_ep_max_tokens_per_rank=256))
+    monkeypatch.setattr(ct_moe, 'get_backend', lambda: FakeBackend())
+    monkeypatch.setattr(ct_moe, 'get_tp_world_rank',
+                        lambda group: (1, 0))
+    monkeypatch.setattr(ct_moe, 'get_ep_world_rank', lambda: (8, 3))
+
+    layer = FusedMoEW4A16(
+        hidden_dim=64,
+        ffn_dim=256,
+        num_experts=16,
+        top_k=2,
+        dtype=torch.bfloat16,
+        layer_idx=7,
+    )
+
+    assert calls['op_type'] == ct_moe.OpType.FusedMoEW4A16
+    assert calls['builder'] == {
+        'top_k': 2,
+        'num_experts': 16,
+        'hidden_dim': 64,
+        'ep_size': 8,
+        'ep_group': ep_group,
+        'renormalize': False,
+        'num_bits': 4,
+        'group_size': 32,
+        'out_dtype': torch.bfloat16,
+        'num_max_dispatch_tokens_per_rank': 256,
+        'layer_idx': 7,
+    }
+    assert layer.expert_list == [6, 7]
+    assert layer.gate_up.weight_packed.shape[0] == 2
+    assert layer.down.weight_packed.shape[0] == 2
+    assert layer.all_reduce is False

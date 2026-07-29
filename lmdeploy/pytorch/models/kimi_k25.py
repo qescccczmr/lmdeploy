@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from transformers.configuration_utils import PretrainedConfig
 
+from lmdeploy.pytorch.distributed import get_dist_manager
 from lmdeploy.pytorch.engine.input_process import BaseModelInputProcessor, PreprocessInputResult
 from lmdeploy.pytorch.model_inputs import StepContext, StepContextManager
 from lmdeploy.pytorch.multimodal.data_type import MultiModalData
@@ -180,6 +181,8 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
             quant_method = quant_config.get('quant_method')
         else:
             quant_method = getattr(quant_config, 'quant_method', None)
+        self._uses_compressed_tensors = (
+            quant_method == 'compressed-tensors')
         if quant_method == 'compressed-tensors':
             if getattr(config.text_config, 'quantization_config', None) is None:
                 raise RuntimeError(
@@ -379,6 +382,12 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
         **kwargs,
     ):
         """Capture only text decode; media and embedding prefill stay eager."""
+        if (self._uses_compressed_tensors
+                and get_dist_manager().current_context().dist_config.ep > 1):
+            # The packed W4 DeepEP path currently uses normal-mode dynamic
+            # dispatch. Keep EP decode eager until its fixed-shape
+            # low-latency dispatcher is implemented.
+            return False
         if inputs_embeds is not None or any(value is not None for value in (pixel_values, grid_thws, image_mask)):
             return False
         if any(kwargs.get(key) is not None for key in self._UNSUPPORTED_MULTIMODAL_FORWARD_KEYS):

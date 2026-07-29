@@ -298,6 +298,27 @@ def test_wrapper_supports_cuda_graph_for_text_decode_only(tiny_model, is_decodin
     assert supported is expected
 
 
+def test_wrapper_keeps_ep_decode_eager_until_low_latency_backend(tiny_model):
+    tiny_model._uses_compressed_tensors = True
+    context = SimpleNamespace(global_is_decoding=lambda: True)
+    dist_context = SimpleNamespace(
+        dist_config=SimpleNamespace(ep=8),
+    )
+    with (
+            get_dist_manager().context(dist_context),
+            step_ctx_manager(tiny_model.ctx_mgr),
+            tiny_model.ctx_mgr.context(context),
+    ):
+        supported = tiny_model.support_cuda_graph(
+            input_ids=torch.tensor([[1]]),
+            position_ids=torch.tensor([[0]]),
+            past_key_values=[],
+            attn_metadata=SimpleNamespace(is_decoding=True),
+        )
+
+    assert supported is False
+
+
 class _TinyVisionTower(nn.Module):
 
     def __init__(self, config, dtype=None, device=None):

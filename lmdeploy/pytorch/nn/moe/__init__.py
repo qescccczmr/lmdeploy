@@ -83,8 +83,6 @@ def build_fused_moe(
             raise RuntimeError('Compressed-tensors W4A16 routed experts do not support bias.')
         if act_func is not None:
             raise RuntimeError('Compressed-tensors W4A16 only supports the built-in SiLU activation.')
-        if enable_ep:
-            raise RuntimeError('Compressed-tensors W4A16 does not support expert parallelism.')
         from .compressed_tensors import FusedMoEW4A16
         return FusedMoEW4A16(
             hidden_dim=hidden_dim,
@@ -97,6 +95,7 @@ def build_fused_moe(
             all_reduce=all_reduce,
             num_bits=quant_config.bits,
             group_size=quant_config.group_size,
+            layer_idx=layer_idx,
         )
     else:
         raise RuntimeError(f'Unsupported quant method: {quant_method}')

@@ -6,8 +6,7 @@ import triton
 import triton.language as tl
 
 from .activation import silu_and_mul
-from .fused_moe import (_get_sorted_idx, _get_sorted_idx_blocks,
-                        _make_intermediate, _renormalize, moe_reduce)
+from .fused_moe import _get_sorted_idx, _get_sorted_idx_blocks, _make_intermediate, _renormalize, moe_reduce
 
 
 @triton.jit
@@ -423,6 +422,7 @@ def fused_moe_w4a16(
     renormalize: bool = False,
     num_bits: int = 4,
     group_size: int = 32,
+    allow_invalid_routes: bool = False,
 ) -> torch.Tensor:
     """Run an eager routed MoE without materializing BF16 expert weights."""
     if hidden_states.dim() != 2:
@@ -456,13 +456,35 @@ def fused_moe_w4a16(
 
     num_tokens = hidden_states.size(0)
     num_experts = gate_up_packed.size(0)
-    if topk > num_experts:
+    if topk > num_experts and not allow_invalid_routes:
         raise ValueError(
             f'top_k={topk} cannot exceed num_experts={num_experts}')
     if num_tokens == 0:
         return hidden_states.new_empty((0, hidden_dim))
+    if allow_invalid_routes and renormalize:
+        raise ValueError(
+            'Invalid-route masking cannot renormalize an EP-local route subset')
+    valid_routes = None
+    routing_topk_ids = topk_ids
+    routing_num_experts = num_experts
+    if allow_invalid_routes:
+        valid_routes = (topk_ids >= 0) & (topk_ids < num_experts)
+        topk_weights = torch.where(
+            valid_routes,
+            topk_weights,
+            torch.zeros((), dtype=topk_weights.dtype, device=topk_weights.device),
+        )
+        # Keep invalid DeepEP-local routes away from the shared sorter.  A
+        # private sentinel expert preserves the flattened route positions and
+        # is excluded from the local W4 launch metadata.
+        routing_topk_ids = torch.where(
+            valid_routes,
+            topk_ids,
+            torch.full_like(topk_ids, num_experts),
+        ).reshape(-1, 1)
+        routing_num_experts += 1
     topk_weights = _renormalize(topk_weights, renormalize)
-    if num_experts == 1:
+    if num_experts == 1 and not allow_invalid_routes:
         # The shared Triton sorter cannot compile a width-one tl.sort. With one
         # expert, top_k is necessarily one and the route order is already sorted.
         sorted_idx = torch.arange(num_tokens,
@@ -479,21 +501,31 @@ def fused_moe_w4a16(
     elif _should_use_compact_w4a16(num_tokens, topk_ids.numel(), num_experts):
         block_m = _w4a16_block_m(num_tokens)
         (sorted_idx, exp_start, exp_end, block_end, block_expert_ids,
-         block_offsets) = _get_sorted_idx_blocks(topk_ids, num_experts,
-                                                 num_experts, 0, block_m)
+         block_offsets) = _get_sorted_idx_blocks(
+             routing_topk_ids,
+             routing_num_experts,
+             num_experts,
+             0,
+             block_m,
+         )
+        exp_start = exp_start[:num_experts]
+        exp_end = exp_end[:num_experts]
         compact_meta = dict(block_end=block_end,
                             block_expert_ids=block_expert_ids,
                             block_offsets=block_offsets,
                             block_m=block_m)
     else:
-        sorted_idx, exp_start, exp_end = _get_sorted_idx(topk_ids, num_experts)
+        sorted_idx, exp_start, exp_end = _get_sorted_idx(
+            routing_topk_ids, routing_num_experts)
+        exp_start = exp_start[:num_experts]
+        exp_end = exp_end[:num_experts]
         compact_meta = {}
 
     gate_up = _make_intermediate(
         (num_tokens, topk, ffn_dim * 2),
         dtype=hidden_states.dtype,
         device=hidden_states.device,
-        zeros=False,
+        zeros=allow_invalid_routes,
     )
     fused_moe_w4a16_kernel_launcher(
         hidden_states,
@@ -518,7 +550,7 @@ def fused_moe_w4a16(
         (num_tokens, topk, hidden_dim),
         dtype=hidden_states.dtype,
         device=hidden_states.device,
-        zeros=False,
+        zeros=allow_invalid_routes,
     )
     fused_moe_w4a16_kernel_launcher(
         activated,
@@ -536,4 +568,6 @@ def fused_moe_w4a16(
         group_size=group_size,
         **compact_meta,
     )
+    if valid_routes is not None:
+        expert_output.masked_fill_(~valid_routes[..., None], 0)
     return moe_reduce(expert_output, topk_weights, fp32_acc=True)

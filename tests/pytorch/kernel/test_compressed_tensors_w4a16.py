@@ -158,6 +158,148 @@ def test_direct_packed_w4a16_tiny_routed_moe_matches_reference(
 
 
 @torch.inference_mode()
+def test_direct_packed_w4a16_masks_deepep_invalid_local_routes():
+    from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import fused_moe_w4a16
+
+    torch.manual_seed(19)
+    device = torch.device('cuda')
+    num_experts, num_tokens, top_k = 4, 5, 2
+    hidden_dim = ffn_dim = 64
+
+    gate_up_qweight = torch.randint(
+        -8,
+        8, (num_experts, 2 * ffn_dim, hidden_dim),
+        dtype=torch.int32,
+        device=device)
+    gate_up_scale = (
+        torch.rand(num_experts, 2 * ffn_dim, hidden_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    down_qweight = torch.randint(
+        -8,
+        8, (num_experts, hidden_dim, ffn_dim),
+        dtype=torch.int32,
+        device=device)
+    down_scale = (
+        torch.rand(num_experts, hidden_dim, ffn_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    hidden_states = torch.randn(num_tokens,
+                                hidden_dim,
+                                dtype=torch.bfloat16,
+                                device=device)
+    topk_ids = torch.tensor(
+        [[-1, 0], [1, -1], [2, 3], [-1, -1], [3, 1]],
+        dtype=torch.int64,
+        device=device,
+    )
+    topk_weights = torch.tensor(
+        [[0.0, 0.7], [0.4, 0.0], [0.6, 0.8], [0.0, 0.0], [0.5, 0.2]],
+        dtype=torch.float32,
+        device=device,
+    )
+
+    output = fused_moe_w4a16(
+        hidden_states,
+        _pack_int4(gate_up_qweight),
+        gate_up_scale,
+        _pack_int4(down_qweight),
+        down_scale,
+        topk_weights,
+        topk_ids,
+        topk=top_k,
+        allow_invalid_routes=True,
+    )
+
+    gate_up_weight = _dequantize(gate_up_qweight, gate_up_scale)
+    down_weight = _dequantize(down_qweight, down_scale)
+    reference = torch.zeros_like(hidden_states)
+    for token_id in range(num_tokens):
+        for route_id in range(top_k):
+            expert_id = int(topk_ids[token_id, route_id])
+            if expert_id < 0:
+                continue
+            gate_up = hidden_states[token_id] @ gate_up_weight[expert_id].T
+            gate, up = gate_up.chunk(2, dim=-1)
+            expert_output = (F.silu(gate) * up) @ down_weight[expert_id].T
+            reference[token_id] += (
+                expert_output * topk_weights[token_id, route_id])
+
+    assert torch.isfinite(output).all()
+    assert torch.count_nonzero(output[3]) == 0
+    nrmse, cosine = _quality(output, reference)
+    assert nrmse <= 1e-2
+    assert cosine >= 0.9999
+
+
+@torch.inference_mode()
+def test_direct_packed_w4a16_allows_topk_wider_than_local_experts():
+    from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import fused_moe_w4a16
+
+    torch.manual_seed(23)
+    device = torch.device('cuda')
+    num_experts, num_tokens, top_k = 1, 3, 2
+    hidden_dim = ffn_dim = 64
+
+    gate_up_qweight = torch.randint(
+        -8,
+        8, (num_experts, 2 * ffn_dim, hidden_dim),
+        dtype=torch.int32,
+        device=device)
+    gate_up_scale = (
+        torch.rand(num_experts, 2 * ffn_dim, hidden_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    down_qweight = torch.randint(
+        -8,
+        8, (num_experts, hidden_dim, ffn_dim),
+        dtype=torch.int32,
+        device=device)
+    down_scale = (
+        torch.rand(num_experts, hidden_dim, ffn_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    hidden_states = torch.randn(num_tokens,
+                                hidden_dim,
+                                dtype=torch.bfloat16,
+                                device=device)
+    topk_ids = torch.tensor(
+        [[0, -1], [-1, 0], [0, -1]],
+        dtype=torch.int64,
+        device=device,
+    )
+    topk_weights = torch.tensor(
+        [[0.7, 0.0], [0.0, 0.4], [0.6, 0.0]],
+        dtype=torch.float32,
+        device=device,
+    )
+
+    output = fused_moe_w4a16(
+        hidden_states,
+        _pack_int4(gate_up_qweight),
+        gate_up_scale,
+        _pack_int4(down_qweight),
+        down_scale,
+        topk_weights,
+        topk_ids,
+        topk=top_k,
+        allow_invalid_routes=True,
+    )
+
+    gate_up_weight = _dequantize(gate_up_qweight, gate_up_scale)
+    down_weight = _dequantize(down_qweight, down_scale)
+    reference = torch.zeros_like(hidden_states)
+    for token_id in range(num_tokens):
+        route_id = int((topk_ids[token_id] == 0).nonzero().item())
+        gate_up = hidden_states[token_id] @ gate_up_weight[0].T
+        gate, up = gate_up.chunk(2, dim=-1)
+        expert_output = (F.silu(gate) * up) @ down_weight[0].T
+        reference[token_id] = (
+            expert_output * topk_weights[token_id, route_id])
+
+    assert torch.isfinite(output).all()
+    nrmse, cosine = _quality(output, reference)
+    assert nrmse <= 1e-2
+    assert cosine >= 0.9999
+
+
+@torch.inference_mode()
 def test_direct_packed_w4a16_kimi_combine_uses_fp32_semantics():
     from lmdeploy.pytorch.kernels.cuda.fused_moe import moe_reduce
 
@@ -341,7 +483,10 @@ def test_direct_packed_w4a16_skewed_distinct_routes_and_down_reindex(top_k):
 @torch.inference_mode()
 def test_direct_packed_w4a16_compacts_sparse_kimi_scale_routes():
     from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import (
-        _should_use_compact_w4a16, _w4a16_block_m, fused_moe_w4a16)
+        _should_use_compact_w4a16,
+        _w4a16_block_m,
+        fused_moe_w4a16,
+    )
     from lmdeploy.pytorch.kernels.cuda.fused_moe import _get_sorted_idx_blocks
 
     torch.manual_seed(13)

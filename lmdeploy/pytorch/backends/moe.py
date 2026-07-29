@@ -146,6 +146,12 @@ class FusedMoEW4A16Builder(ABC):
         renormalize: bool = False,
         num_bits: int = 4,
         group_size: int = 32,
+        hidden_dim: int = 1,
+        ep_size: int = 1,
+        ep_group: dist.ProcessGroup = None,
+        out_dtype: torch.dtype = torch.bfloat16,
+        num_max_dispatch_tokens_per_rank: int = 128,
+        layer_idx: int = 0,
     ):
         """Build the eager W4A16 implementation."""
         raise NotImplementedError

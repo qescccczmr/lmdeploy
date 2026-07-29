@@ -15,6 +15,7 @@ from torch import nn
 from lmdeploy.pytorch.backends import OpType, get_backend
 from lmdeploy.pytorch.config import TPMode
 from lmdeploy.pytorch.distributed import get_dist_manager, get_ep_world_rank, get_tp_world_rank
+from lmdeploy.pytorch.models.patch import get_build_model_context
 
 from .base import FusedMoEBase, MoeType, moe_gather_inputs, moe_reduce, update_dims
 
@@ -274,7 +275,7 @@ class CompressedTensorsMoEWeights(nn.Module):
 
 
 class FusedMoEW4A16(FusedMoEBase):
-    """Eager TP-only routed MoE operating directly on packed INT4 weights."""
+    """Eager TP/DeepEP routed MoE operating directly on packed INT4 weights."""
 
     # The Kimi reference combines router-weighted expert outputs in FP32.
     # Preserve that accumulator through the single outer TP reduction.
@@ -292,6 +293,7 @@ class FusedMoEW4A16(FusedMoEBase):
         all_reduce: bool = True,
         num_bits: int = 4,
         group_size: int = 32,
+        layer_idx: int = 0,
     ):
         device = device or torch.device('cpu')
         dtype = dtype or torch.bfloat16
@@ -301,11 +303,8 @@ class FusedMoEW4A16(FusedMoEBase):
             )
 
         self.init_dist_args(all_reduce)
-        dist_config = get_dist_manager().current_context().dist_config
-        if self.ep > 1:
-            raise RuntimeError(
-                'Compressed-tensors W4A16 does not support expert parallelism.'
-            )
+        dist_ctx = get_dist_manager().current_context()
+        dist_config = dist_ctx.dist_config
         if dist_config.dp > 1:
             raise RuntimeError(
                 'Compressed-tensors W4A16 only supports tensor parallelism with DP=1.'
@@ -327,17 +326,25 @@ class FusedMoEW4A16(FusedMoEBase):
                          do_renormalize=renormalize)
         impl_builder = get_backend().get_layer_impl_builder(
             OpType.FusedMoEW4A16)
+        deep_ep_max_tokens_per_rank = (
+            get_build_model_context().deep_ep_max_tokens_per_rank)
         self.impl = impl_builder.build(
             top_k=top_k,
             num_experts=num_experts,
+            hidden_dim=hidden_dim,
+            ep_size=self.ep,
+            ep_group=dist_ctx.ep_gpu_group,
             renormalize=renormalize,
             num_bits=num_bits,
             group_size=group_size,
+            out_dtype=dtype,
+            num_max_dispatch_tokens_per_rank=
+            deep_ep_max_tokens_per_rank,
+            layer_idx=layer_idx,
         )
 
         global_ffn_dim = ffn_dim
         hidden_dim, local_ffn_dim = update_dims(hidden_dim, ffn_dim)
-        self.expert_list = None
         self.gate_up = CompressedTensorsMoEWeights(
             num_experts=num_experts,
             hidden_dim=hidden_dim,
@@ -347,6 +354,8 @@ class FusedMoEW4A16(FusedMoEBase):
             group_size=group_size,
             device=device,
         )
+        self.expert_list = (
+            self.gate_up.expert_list if self.ep > 1 else None)
         self.down = CompressedTensorsMoEWeights(
             num_experts=num_experts,
             hidden_dim=hidden_dim,
@@ -417,6 +426,7 @@ class FusedMoEW4A16(FusedMoEBase):
         return {'hidden_states': state['hidden_states'], 'moe_type': moe_type}
 
     def wait(self, state: dict):
-        """Async/DeepEP execution is outside the eager compatibility path."""
+        """Async execution is outside the synchronous eager path."""
         raise NotImplementedError(
-            'Compressed-tensors W4A16 only supports eager execution.')
+            'Compressed-tensors W4A16 only supports synchronous eager execution.'
+        )

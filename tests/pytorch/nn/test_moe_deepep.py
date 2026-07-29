@@ -461,3 +461,276 @@ def test_blocked_fp8_async_prefill_passes_weight_dtype_and_scale_fmt():
     assert fusedmoe.quant_args == (hidden_states, torch.float8_e5m2, 'ue8m0')
     assert out_state['hidden_states'] == ('quant', 'scale')
     assert out_state['previous_event'] == 'event'
+
+
+def test_w4a16_ep_builder_initializes_normal_dispatcher(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    calls = {}
+
+    class FakeDeepEPState:
+
+        def enable(self):
+            calls['state_enabled'] = True
+
+    class FakeDeepEPBuffer:
+
+        @classmethod
+        def set_explicitly_destroy(cls):
+            calls['explicit_destroy'] = True
+
+    class FakeDispatcher:
+
+        def __init__(self, **kwargs):
+            calls['dispatcher_kwargs'] = kwargs
+
+    ep_group = object()
+    monkeypatch.setattr(w4, 'use_deepep', True)
+    monkeypatch.setattr(w4, 'get_deepep_state',
+                        lambda: FakeDeepEPState())
+    monkeypatch.setattr(w4, 'DeepEPBuffer', FakeDeepEPBuffer)
+    monkeypatch.setattr(w4, 'DeepEPTokenDispatcherNormal', FakeDispatcher)
+
+    impl = w4.TritonFusedMoEW4A16Builder.build(
+        top_k=8,
+        num_experts=384,
+        hidden_dim=7168,
+        ep_size=8,
+        ep_group=ep_group,
+        out_dtype=torch.bfloat16,
+        num_max_dispatch_tokens_per_rank=256,
+        layer_idx=7,
+    )
+
+    assert isinstance(impl, w4.DeepEPFusedMoEW4A16Impl)
+    assert impl.num_local_experts == 48
+    assert calls['state_enabled'] is True
+    assert calls['explicit_destroy'] is True
+    assert calls['dispatcher_kwargs'] == {
+        'group': ep_group,
+        'num_experts': 384,
+        'num_local_experts': 48,
+        'hidden_size': 7168,
+        'params_dtype': torch.bfloat16,
+        'num_max_dispatch_tokens_per_rank': 256,
+        'expert_alignment': 1,
+    }
+
+
+def test_w4a16_ep_forward_dispatches_local_routes_and_combines(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    calls = {}
+    recv_hidden_states = torch.randn(2, 4, dtype=torch.bfloat16)
+    recv_topk_ids = torch.tensor([[0, -1], [-1, 1]], dtype=torch.int64)
+    recv_topk_weights = torch.tensor([[0.25, 0.0], [0.0, 0.75]],
+                                     dtype=torch.float32)
+    local_output = torch.full((2, 4), 3, dtype=torch.bfloat16)
+    combined_output = torch.full((1, 4), 5, dtype=torch.bfloat16)
+
+    class FakeDispatcher:
+
+        def dispatch(self, hidden_states, topk_ids, topk_weights):
+            calls['dispatch'] = (hidden_states, topk_ids, topk_weights)
+            return (recv_hidden_states, recv_topk_ids, recv_topk_weights,
+                    torch.tensor([1, 1]))
+
+        def combine(self, out_states):
+            calls['combine'] = out_states
+            return combined_output
+
+        def release(self):
+            calls['release_count'] = calls.get('release_count', 0) + 1
+
+    def fake_split(hidden_states, topk_weights, topk_ids):
+        calls['split'] = (hidden_states, topk_weights, topk_ids)
+        split_result = (hidden_states[:1], topk_weights[:1],
+                        topk_ids[:1], [1, 1])
+        calls['split_result'] = split_result
+        return split_result
+
+    def fake_gather(out_states, split_size):
+        calls['gather'] = (out_states, split_size)
+        return torch.cat([out_states, out_states], dim=0)
+
+    def fake_kernel(*args, **kwargs):
+        calls['kernel_args'] = args
+        calls['kernel_kwargs'] = kwargs
+        return local_output
+
+    monkeypatch.setattr(w4, 'split_inputs_by_attn_tp', fake_split)
+    monkeypatch.setattr(w4, 'gather_outputs_by_attn_tp', fake_gather)
+    monkeypatch.setattr(w4, 'fused_moe_w4a16', fake_kernel)
+
+    impl = w4.DeepEPFusedMoEW4A16Impl.__new__(
+        w4.DeepEPFusedMoEW4A16Impl)
+    impl.top_k = 2
+    impl.num_local_experts = 2
+    impl.renormalize = True
+    impl.num_bits = 4
+    impl.group_size = 32
+    impl.token_dispatcher = FakeDispatcher()
+
+    hidden_states = torch.randn(2, 4, dtype=torch.bfloat16)
+    topk_weights = torch.tensor([[1.0, 3.0], [2.0, 2.0]])
+    topk_ids = torch.tensor([[101, 205], [302, 99]])
+    gate_up_packed = torch.empty(2, 8, 1, dtype=torch.int32)
+    gate_up_scale = torch.empty(2, 8, 1, dtype=torch.bfloat16)
+    down_packed = torch.empty(2, 4, 1, dtype=torch.int32)
+    down_scale = torch.empty(2, 4, 1, dtype=torch.bfloat16)
+
+    output = impl.forward(
+        hidden_states,
+        topk_weights,
+        topk_ids,
+        gate_up_packed,
+        gate_up_scale,
+        down_packed,
+        down_scale,
+    )
+
+    dispatch_hidden, dispatch_ids, dispatch_weights = calls['dispatch']
+    assert dispatch_hidden is calls['split_result'][0]
+    assert torch.equal(dispatch_ids, topk_ids[:1])
+    torch.testing.assert_close(dispatch_weights,
+                               torch.tensor([[0.25, 0.75]]))
+
+    kernel_args = calls['kernel_args']
+    assert kernel_args[0] is recv_hidden_states
+    assert kernel_args[5] is recv_topk_weights
+    assert kernel_args[6] is recv_topk_ids
+    assert (recv_topk_weights[recv_topk_ids < 0] == 0).all()
+    assert calls['kernel_kwargs'] == {
+        'topk': 2,
+        'renormalize': False,
+        'num_bits': 4,
+        'group_size': 32,
+        'allow_invalid_routes': True,
+    }
+    assert calls['combine'] is local_output
+    assert calls['gather'][0] is combined_output
+    assert calls['gather'][1] == [1, 1]
+    assert calls['release_count'] == 1
+    assert torch.equal(output, torch.cat([combined_output, combined_output],
+                                         dim=0))
+
+
+def test_w4a16_ep_releases_dispatch_state_when_kernel_fails(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    calls = {'release_count': 0}
+
+    class FakeDispatcher:
+
+        def dispatch(self, hidden_states, topk_ids, topk_weights):
+            return (hidden_states, topk_ids, topk_weights,
+                    torch.tensor([1, 1]))
+
+        def release(self):
+            calls['release_count'] += 1
+
+    def fail_kernel(*args, **kwargs):
+        raise RuntimeError('kernel failure')
+
+    monkeypatch.setattr(
+        w4, 'split_inputs_by_attn_tp',
+        lambda hidden, weights, ids: (hidden, weights, ids, None))
+    monkeypatch.setattr(w4, 'fused_moe_w4a16', fail_kernel)
+
+    impl = w4.DeepEPFusedMoEW4A16Impl.__new__(
+        w4.DeepEPFusedMoEW4A16Impl)
+    impl.top_k = 2
+    impl.num_local_experts = 2
+    impl.renormalize = False
+    impl.num_bits = 4
+    impl.group_size = 32
+    impl.token_dispatcher = FakeDispatcher()
+
+    hidden_states = torch.randn(1, 4, dtype=torch.bfloat16)
+    topk_weights = torch.tensor([[0.25, 0.75]])
+    topk_ids = torch.tensor([[0, -1]])
+    gate_up_packed = torch.empty(2, 8, 1, dtype=torch.int32)
+    gate_up_scale = torch.empty(2, 8, 1, dtype=torch.bfloat16)
+    down_packed = torch.empty(2, 4, 1, dtype=torch.int32)
+    down_scale = torch.empty(2, 4, 1, dtype=torch.bfloat16)
+
+    with pytest.raises(RuntimeError, match='kernel failure'):
+        impl.forward(hidden_states, topk_weights, topk_ids,
+                     gate_up_packed, gate_up_scale, down_packed, down_scale)
+
+    assert calls['release_count'] == 1
+
+
+def test_w4a16_ep_rejects_nonlocal_weight_shape_before_dispatch():
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    class FailDispatcher:
+
+        def dispatch(self, *args, **kwargs):
+            raise AssertionError('dispatch must not run')
+
+    impl = w4.DeepEPFusedMoEW4A16Impl.__new__(
+        w4.DeepEPFusedMoEW4A16Impl)
+    impl.num_local_experts = 2
+    impl.token_dispatcher = FailDispatcher()
+
+    with pytest.raises(ValueError, match='Expected 2 local experts'):
+        impl.forward(
+            torch.empty(1, 4, dtype=torch.bfloat16),
+            torch.empty(1, 2),
+            torch.empty(1, 2, dtype=torch.int64),
+            torch.empty(3, 8, 1, dtype=torch.int32),
+            torch.empty(2, 8, 1, dtype=torch.bfloat16),
+            torch.empty(2, 4, 1, dtype=torch.int32),
+            torch.empty(2, 4, 1, dtype=torch.bfloat16),
+        )
+
+
+def test_w4a16_ep_allows_topk_larger_than_local_expert_count(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    monkeypatch.setattr(w4, 'use_deepep', True)
+    monkeypatch.setattr(w4, 'get_deepep_state',
+                        lambda: type('State', (), {'enable': lambda self: None})())
+    monkeypatch.setattr(w4.DeepEPBuffer, 'set_explicitly_destroy',
+                        lambda: None)
+    monkeypatch.setattr(w4, 'DeepEPTokenDispatcherNormal',
+                        lambda **kwargs: object())
+
+    impl = w4.DeepEPFusedMoEW4A16Impl(
+        top_k=2,
+        num_experts=8,
+        hidden_dim=64,
+        ep_size=8,
+        ep_group=object(),
+        renormalize=False,
+        num_bits=4,
+        group_size=32,
+        out_dtype=torch.bfloat16,
+        num_max_dispatch_tokens_per_rank=8,
+        layer_idx=0,
+    )
+
+    assert impl.top_k == 2
+    assert impl.num_local_experts == 1
+
+
+def test_w4a16_ep_rejects_fp16_activations(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    monkeypatch.setattr(w4.dist, 'is_initialized', lambda: False)
+
+    with pytest.raises(ValueError, match='requires bfloat16'):
+        w4.DeepEPFusedMoEW4A16Impl(
+            top_k=2,
+            num_experts=8,
+            hidden_dim=64,
+            ep_size=8,
+            ep_group=object(),
+            renormalize=False,
+            num_bits=4,
+            group_size=32,
+            out_dtype=torch.float16,
+            num_max_dispatch_tokens_per_rank=8,
+            layer_idx=0,
+        )
