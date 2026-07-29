@@ -410,6 +410,120 @@ def fused_moe_w4a16_kernel_launcher(
     )
 
 
+def fused_moe_w4a16_masked(
+    hidden_states: torch.Tensor,
+    gate_up_packed: torch.Tensor,
+    gate_up_scale: torch.Tensor,
+    down_packed: torch.Tensor,
+    down_scale: torch.Tensor,
+    masked_m: torch.Tensor,
+    num_bits: int = 4,
+    group_size: int = 32,
+) -> torch.Tensor:
+    """Run fixed-capacity, unweighted local experts for DeepEP decode.
+
+    ``hidden_states`` uses DeepEP's low-latency layout
+    ``[local_experts, capacity, hidden]``. Only the first ``masked_m[e]``
+    rows of expert ``e`` are valid. The returned BF16 tensor keeps the same
+    fixed layout; DeepEP applies global router weights while combining it.
+    """
+    if hidden_states.dim() != 3:
+        raise ValueError(
+            'masked W4A16 hidden_states must be [experts, capacity, hidden]')
+    if not hidden_states.is_contiguous():
+        raise ValueError('masked W4A16 hidden_states must be contiguous')
+    if hidden_states.dtype != torch.bfloat16:
+        raise ValueError(
+            f'DeepEP masked W4A16 requires bfloat16 activations, got {hidden_states.dtype}'
+        )
+    num_experts, capacity, hidden_dim = hidden_states.shape
+    if num_experts < 1 or capacity < 1:
+        raise ValueError(
+            f'masked W4A16 requires positive experts and capacity, got {hidden_states.shape}'
+        )
+    if masked_m.dim() != 1 or masked_m.numel() != num_experts:
+        raise ValueError(
+            f'masked_m must have one count per local expert ({num_experts})')
+    if masked_m.dtype not in (torch.int32, torch.int64):
+        raise ValueError(
+            f'masked_m must be int32 or int64, got {masked_m.dtype}')
+    if masked_m.device != hidden_states.device:
+        raise ValueError(
+            'masked_m and hidden_states must be on the same device')
+    local_weight_tensors = (
+        gate_up_packed,
+        gate_up_scale,
+        down_packed,
+        down_scale,
+    )
+    if any(tensor.shape[0] != num_experts
+           for tensor in local_weight_tensors):
+        raise ValueError(
+            'masked W4A16 weights must match the local expert count')
+    if gate_up_packed.shape[1] % 2 != 0:
+        raise ValueError('Gate-up output dimension must be even')
+    ffn_dim = gate_up_packed.shape[1] // 2
+    if down_packed.shape[1] != hidden_dim:
+        raise ValueError('Down output dimension must match hidden size')
+    if down_scale.shape[-1] * group_size != ffn_dim:
+        raise ValueError(
+            'Down input dimension must match half of gate-up output')
+
+    route_count = num_experts * capacity
+    sorted_idx = torch.arange(
+        route_count,
+        dtype=masked_m.dtype,
+        device=hidden_states.device,
+    )
+    exp_start = torch.arange(
+        num_experts,
+        dtype=masked_m.dtype,
+        device=hidden_states.device,
+    ) * capacity
+    exp_end = exp_start + masked_m.clamp(min=0, max=capacity)
+
+    gate_up = hidden_states.new_zeros(
+        (num_experts, capacity, 2 * ffn_dim))
+    fused_moe_w4a16_kernel_launcher(
+        hidden_states,
+        gate_up_packed,
+        gate_up_scale,
+        gate_up,
+        sorted_idx,
+        exp_start,
+        exp_end,
+        top_k=1,
+        # This controls the routed-M launch capacity per expert. The routing
+        # indices still address the full flattened [E, capacity] tensor.
+        num_tokens=capacity,
+        reindex_a=True,
+        reindex_c=True,
+        num_bits=num_bits,
+        group_size=group_size,
+    )
+
+    activated = silu_and_mul(
+        gate_up.flatten(0, 1)).unflatten(0, (num_experts, capacity))
+    expert_output = hidden_states.new_zeros(
+        (num_experts, capacity, hidden_dim))
+    fused_moe_w4a16_kernel_launcher(
+        activated,
+        down_packed,
+        down_scale,
+        expert_output,
+        sorted_idx,
+        exp_start,
+        exp_end,
+        top_k=1,
+        num_tokens=capacity,
+        reindex_a=True,
+        reindex_c=True,
+        num_bits=num_bits,
+        group_size=group_size,
+    )
+    return expert_output
+
+
 def fused_moe_w4a16(
     hidden_states: torch.Tensor,
     gate_up_packed: torch.Tensor,

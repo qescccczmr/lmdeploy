@@ -300,6 +300,104 @@ def test_direct_packed_w4a16_allows_topk_wider_than_local_experts():
 
 
 @torch.inference_mode()
+def test_masked_w4a16_static_expert_layout_matches_reference_and_graph():
+    from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import fused_moe_w4a16_masked
+
+    torch.manual_seed(29)
+    device = torch.device('cuda')
+    num_experts, capacity = 3, 4
+    hidden_dim = ffn_dim = 64
+    gate_up_qweight = torch.randint(
+        -8,
+        8, (num_experts, 2 * ffn_dim, hidden_dim),
+        dtype=torch.int32,
+        device=device,
+    )
+    gate_up_scale = (
+        torch.rand(num_experts, 2 * ffn_dim, hidden_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    down_qweight = torch.randint(
+        -8,
+        8, (num_experts, hidden_dim, ffn_dim),
+        dtype=torch.int32,
+        device=device,
+    )
+    down_scale = (
+        torch.rand(num_experts, hidden_dim, ffn_dim // 32, device=device) *
+        0.03 + 0.002).to(torch.bfloat16)
+    gate_up_packed = _pack_int4(gate_up_qweight)
+    down_packed = _pack_int4(down_qweight)
+    gate_up_weight = _dequantize(gate_up_qweight, gate_up_scale)
+    down_weight = _dequantize(down_qweight, down_scale)
+
+    def reference(hidden_states, masked_m):
+        expected = torch.zeros_like(hidden_states)
+        for expert_id, count in enumerate(masked_m.tolist()):
+            if count == 0:
+                continue
+            gate_up = (
+                hidden_states[expert_id, :count] @
+                gate_up_weight[expert_id].T)
+            gate, up = gate_up.chunk(2, dim=-1)
+            expected[expert_id, :count] = (
+                (F.silu(gate) * up) @ down_weight[expert_id].T)
+        return expected
+
+    # Warm every Triton specialization before CUDA Graph capture.
+    hidden_states = torch.randn(
+        num_experts,
+        capacity,
+        hidden_dim,
+        dtype=torch.bfloat16,
+        device=device,
+    )
+    masked_m = torch.tensor([4, 2, 0], dtype=torch.int32, device=device)
+    warm_output = fused_moe_w4a16_masked(
+        hidden_states,
+        gate_up_packed,
+        gate_up_scale,
+        down_packed,
+        down_scale,
+        masked_m,
+    )
+    warm_reference = reference(hidden_states, masked_m.cpu())
+    warm_nrmse, warm_cosine = _quality(warm_output, warm_reference)
+    assert warm_nrmse <= 1e-2
+    assert warm_cosine >= 0.9999
+    assert torch.count_nonzero(warm_output[1, 2:]) == 0
+    assert torch.count_nonzero(warm_output[2]) == 0
+
+    static_hidden = hidden_states.clone()
+    static_masked_m = masked_m.clone()
+    graph = torch.cuda.CUDAGraph()
+    torch.cuda.synchronize()
+    with torch.cuda.graph(graph):
+        graph_output = fused_moe_w4a16_masked(
+            static_hidden,
+            gate_up_packed,
+            gate_up_scale,
+            down_packed,
+            down_scale,
+            static_masked_m,
+        )
+
+    next_hidden = torch.randn_like(static_hidden)
+    next_masked_m = torch.tensor(
+        [1, 4, 3], dtype=torch.int32, device=device)
+    static_hidden.copy_(next_hidden)
+    static_masked_m.copy_(next_masked_m)
+    graph.replay()
+    torch.cuda.synchronize()
+
+    graph_reference = reference(next_hidden, next_masked_m.cpu())
+    graph_nrmse, graph_cosine = _quality(graph_output, graph_reference)
+    assert graph_nrmse <= 1e-2
+    assert graph_cosine >= 0.9999
+    assert torch.count_nonzero(graph_output[0, 1:]) == 0
+    assert torch.count_nonzero(graph_output[2, 3:]) == 0
+
+
+@torch.inference_mode()
 def test_direct_packed_w4a16_kimi_combine_uses_fp32_semantics():
     from lmdeploy.pytorch.kernels.cuda.fused_moe import moe_reduce
 
