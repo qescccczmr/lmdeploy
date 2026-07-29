@@ -4,13 +4,19 @@ import torch.distributed as dist
 
 from lmdeploy.pytorch.backends.cuda.token_dispatcher import (
     DeepEPBuffer,
+    DeepEPTokenDispatcherLowLatency,
     DeepEPTokenDispatcherNormal,
+    DisposibleTensor,
     use_deepep,
 )
 from lmdeploy.pytorch.backends.deepep_state import get_deepep_state
 from lmdeploy.pytorch.backends.moe import FusedMoEW4A16Builder, FusedMoEW4A16Impl
-from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import fused_moe_w4a16
+from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import (
+    fused_moe_w4a16,
+    fused_moe_w4a16_masked,
+)
 from lmdeploy.pytorch.kernels.cuda.fused_moe import _renormalize
+from lmdeploy.pytorch.model_inputs import get_step_ctx_manager
 
 from .ep_utils import gather_outputs_by_attn_tp, split_inputs_by_attn_tp
 
@@ -71,7 +77,7 @@ class TritonFusedMoEW4A16Impl(FusedMoEW4A16Impl):
 
 
 class DeepEPFusedMoEW4A16Impl(FusedMoEW4A16Impl):
-    """Synchronous DeepEP normal-mode W4A16 routed experts."""
+    """DeepEP W4A16 experts with normal prefill and low-latency decode."""
 
     def __init__(
         self,
@@ -148,6 +154,15 @@ class DeepEPFusedMoEW4A16Impl(FusedMoEW4A16Impl):
             num_max_dispatch_tokens_per_rank=num_max_dispatch_tokens_per_rank,
             expert_alignment=1,
         )
+        self.low_latency_dispatcher = DeepEPTokenDispatcherLowLatency(
+            group=ep_group,
+            num_experts=num_experts,
+            num_local_experts=self.num_local_experts,
+            hidden_size=hidden_dim,
+            params_dtype=out_dtype,
+            num_max_dispatch_tokens_per_rank=
+            num_max_dispatch_tokens_per_rank,
+        )
 
     def _validate_local_weights(
         self,
@@ -172,7 +187,7 @@ class DeepEPFusedMoEW4A16Impl(FusedMoEW4A16Impl):
                 f'Expected {self.num_local_experts} local experts on each W4A16 tensor, '
                 f'got {mismatched}')
 
-    def forward(
+    def _forward_normal(
         self,
         hidden_states: torch.Tensor,
         topk_weights: torch.Tensor,
@@ -181,17 +196,8 @@ class DeepEPFusedMoEW4A16Impl(FusedMoEW4A16Impl):
         gate_up_scale: torch.Tensor,
         down_packed: torch.Tensor,
         down_scale: torch.Tensor,
-    ):
-        """Dispatch, run local packed experts, and synchronously combine."""
-        self._validate_local_weights(gate_up_packed, gate_up_scale,
-                                     down_packed, down_scale)
-        hidden_states, topk_weights, topk_ids, split_size = (
-            split_inputs_by_attn_tp(hidden_states, topk_weights, topk_ids))
-
-        # Renormalization belongs to the global Top-K domain.  Applying it to
-        # DeepEP's rank-local routes would independently rescale each rank.
-        topk_weights = _renormalize(topk_weights, self.renormalize)
-
+    ) -> torch.Tensor:
+        """Run dynamic normal-mode dispatch for prefill."""
         try:
             (recv_hidden_states, recv_topk_ids, recv_topk_weights,
              _) = self.token_dispatcher.dispatch(
@@ -221,7 +227,90 @@ class DeepEPFusedMoEW4A16Impl(FusedMoEW4A16Impl):
             out_states = self.token_dispatcher.combine(out_states)
         finally:
             self.token_dispatcher.release()
+        return out_states
 
+    def _forward_low_latency(
+        self,
+        hidden_states: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.LongTensor,
+        gate_up_packed: torch.Tensor,
+        gate_up_scale: torch.Tensor,
+        down_packed: torch.Tensor,
+        down_scale: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run fixed-capacity BF16 dispatch for decode/CUDA Graph."""
+        (recv_hidden_states, combine_topk_ids, combine_topk_weights, masked_m,
+         _) = self.low_latency_dispatcher.dispatch(
+             hidden_states,
+             topk_ids,
+             topk_weights,
+             self.num_experts,
+             use_fp8=False,
+        )
+        recv_tensor = DisposibleTensor.maybe_unwrap(recv_hidden_states)
+        try:
+            out_states = fused_moe_w4a16_masked(
+                recv_tensor,
+                gate_up_packed,
+                gate_up_scale,
+                down_packed,
+                down_scale,
+                masked_m,
+                num_bits=self.num_bits,
+                group_size=self.group_size,
+            )
+        finally:
+            del recv_tensor
+            DisposibleTensor.maybe_dispose(recv_hidden_states)
+        return self.low_latency_dispatcher.combine(
+            out_states,
+            combine_topk_ids,
+            combine_topk_weights,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.LongTensor,
+        gate_up_packed: torch.Tensor,
+        gate_up_scale: torch.Tensor,
+        down_packed: torch.Tensor,
+        down_scale: torch.Tensor,
+    ):
+        """Dispatch, run local packed experts, and synchronously combine."""
+        self._validate_local_weights(gate_up_packed, gate_up_scale,
+                                     down_packed, down_scale)
+        hidden_states, topk_weights, topk_ids, split_size = (
+            split_inputs_by_attn_tp(hidden_states, topk_weights, topk_ids))
+
+        # Renormalization belongs to the global Top-K domain. Applying it to
+        # a rank-local route subset would independently rescale each rank.
+        topk_weights = _renormalize(topk_weights, self.renormalize)
+        ctx_mgr = get_step_ctx_manager()
+        step_ctx = (ctx_mgr.current_context()
+                    if ctx_mgr is not None else None)
+        if step_ctx is not None and step_ctx.global_is_decoding():
+            out_states = self._forward_low_latency(
+                hidden_states,
+                topk_weights,
+                topk_ids,
+                gate_up_packed,
+                gate_up_scale,
+                down_packed,
+                down_scale,
+            )
+        else:
+            out_states = self._forward_normal(
+                hidden_states,
+                topk_weights,
+                topk_ids,
+                gate_up_packed,
+                gate_up_scale,
+                down_packed,
+                down_scale,
+            )
         return gather_outputs_by_attn_tp(out_states, split_size)
 
 

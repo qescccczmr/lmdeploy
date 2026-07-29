@@ -298,8 +298,7 @@ def test_wrapper_supports_cuda_graph_for_text_decode_only(tiny_model, is_decodin
     assert supported is expected
 
 
-def test_wrapper_keeps_ep_decode_eager_until_low_latency_backend(tiny_model):
-    tiny_model._uses_compressed_tensors = True
+def test_wrapper_supports_ep_text_decode_cuda_graph(tiny_model):
     context = SimpleNamespace(global_is_decoding=lambda: True)
     dist_context = SimpleNamespace(
         dist_config=SimpleNamespace(ep=8),
@@ -316,7 +315,7 @@ def test_wrapper_keeps_ep_decode_eager_until_low_latency_backend(tiny_model):
             attn_metadata=SimpleNamespace(is_decoding=True),
         )
 
-    assert supported is False
+    assert supported is True
 
 
 class _TinyVisionTower(nn.Module):
