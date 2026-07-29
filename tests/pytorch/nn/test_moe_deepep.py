@@ -130,6 +130,38 @@ def test_deepep_buffer_uses_internal_default_token_limit(monkeypatch):
     assert td.DeepEPBuffer.destroy() is False
 
 
+@pytest.mark.parametrize(
+    'configured_mode',
+    ('AUTO', 'NORMAL', 'LOW_LATENCY'),
+)
+def test_deepep_buffer_cleans_every_normal_to_low_latency_transition(
+        monkeypatch, configured_mode):
+    from lmdeploy.pytorch.backends.cuda import token_dispatcher as td
+
+    common_buffer = object()
+    clean_calls = []
+    monkeypatch.setattr(td.DeepEPBuffer, '_buffer_common', common_buffer)
+    monkeypatch.setattr(td.DeepEPBuffer, '_deepep_mode',
+                        td.DeepEPMode[configured_mode])
+    monkeypatch.setattr(td.DeepEPBuffer, '_latest_mode',
+                        td.DeepEPMode.NORMAL)
+    monkeypatch.setattr(
+        td.DeepEPBuffer,
+        'clean_low_latency_buffer',
+        lambda buffer=None: clean_calls.append(buffer),
+    )
+
+    mode, cleaned = td.DeepEPBuffer.set_deepep_mode(
+        td.DeepEPMode.LOW_LATENCY)
+    repeated_mode, repeated_cleaned = td.DeepEPBuffer.set_deepep_mode(
+        td.DeepEPMode.LOW_LATENCY)
+
+    assert mode == repeated_mode == td.DeepEPMode.LOW_LATENCY
+    assert cleaned is True
+    assert repeated_cleaned is False
+    assert clean_calls == [common_buffer]
+
+
 def test_disposible_tensor_dispose_is_best_effort_with_extra_refs():
     from lmdeploy.pytorch.backends.cuda.token_dispatcher import DisposibleTensor
 
@@ -202,6 +234,79 @@ def test_low_latency_dispatcher_accepts_explicit_token_limit(monkeypatch):
 
     assert dispatcher.num_max_dispatch_tokens_per_rank == 256
     assert FakeBuffer.low_latency_size_hint_args[0] == 256
+
+
+@pytest.mark.parametrize('async_dispatch', [False, True])
+def test_low_latency_dispatcher_preserves_bf16_tensor_contract(
+        async_dispatch):
+    from lmdeploy.pytorch.backends.cuda import token_dispatcher as td
+
+    calls = {}
+    recv_hidden_states = torch.randn(2, 3, 4, dtype=torch.bfloat16)
+    recv_expert_count = torch.tensor([3, 1], dtype=torch.int32)
+    handle = object()
+
+    class FakeEvent:
+
+        def current_stream_wait(self):
+            calls['waited'] = True
+
+    class FakeBuffer:
+        group_size = 2
+
+        def low_latency_dispatch(self, hidden_states, topk_idx,
+                                 num_max_dispatch_tokens_per_rank,
+                                 num_experts, **kwargs):
+            calls['dispatch'] = {
+                'hidden_states': hidden_states,
+                'topk_idx': topk_idx,
+                'num_max_dispatch_tokens_per_rank':
+                num_max_dispatch_tokens_per_rank,
+                'num_experts': num_experts,
+                **kwargs,
+            }
+            return (recv_hidden_states, recv_expert_count, handle,
+                    FakeEvent(), None)
+
+    dispatcher = td.DeepEPTokenDispatcherLowLatency.__new__(
+        td.DeepEPTokenDispatcherLowLatency)
+    dispatcher.num_experts = 4
+    dispatcher.num_max_dispatch_tokens_per_rank = 8
+    dispatcher.return_recv_hook = False
+    dispatcher.get_buffer = lambda: FakeBuffer()
+
+    hidden_states = torch.randn(1, 4, dtype=torch.bfloat16)
+    topk_idx = torch.tensor([[0, 3]], dtype=torch.int64)
+    topk_weights = torch.tensor([[0.25, 0.75]], dtype=torch.float32)
+    if async_dispatch:
+        wrapped, counts, actual_handle, event, hook = (
+            dispatcher.dispatch_async(
+                hidden_states,
+                topk_idx,
+                use_fp8=False,
+                async_finish=True,
+            ))
+        assert counts is recv_expert_count
+        assert actual_handle is handle
+        assert isinstance(event, FakeEvent)
+        assert hook is None
+    else:
+        wrapped, actual_ids, actual_weights, counts, _ = (
+            dispatcher.dispatch(
+                hidden_states,
+                topk_idx,
+                topk_weights,
+                num_experts=4,
+                use_fp8=False,
+            ))
+        assert actual_ids is topk_idx
+        assert actual_weights is topk_weights
+        assert counts is recv_expert_count
+        assert calls['waited'] is True
+
+    assert isinstance(wrapped, td.DisposibleTensor)
+    assert wrapped.value is recv_hidden_states
+    assert calls['dispatch']['use_fp8'] is False
 
 
 def test_normal_dispatcher_accepts_explicit_token_limit_for_common_buffer(monkeypatch):
