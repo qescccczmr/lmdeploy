@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from lmdeploy.pytorch.config import DistConfig, ModelConfig
+from lmdeploy.messages import PytorchEngineConfig
+from lmdeploy.pytorch.config import DistConfig, ModelConfig, TPMode
 
 
 def _make_model_config(num_attention_heads=32, num_key_value_heads=8, dist_config=None):
@@ -66,3 +67,22 @@ def test_get_num_qkv_head_by_tp_requires_divisible_heads():
 
     with pytest.raises(AssertionError):
         model_config.get_num_qkv_head_by_tp()
+
+
+def test_dp_attention_builds_kimi_tp8_ep8_topology():
+    engine_config = PytorchEngineConfig(
+        tp=8,
+        dp=8,
+        ep=8,
+        attn_tp_size=1,
+    )
+
+    dist_config = DistConfig.from_engine_config(engine_config)
+
+    assert dist_config.world_size == 8
+    assert dist_config.dp == 8
+    assert dist_config.attn_tp == 1
+    assert dist_config.mlp_tp == 8
+    assert dist_config.moe_tp == 1
+    assert dist_config.mlp_tp_mode == TPMode.DP_TP
+    assert dist_config.moe_tp_mode == TPMode.DEFAULT

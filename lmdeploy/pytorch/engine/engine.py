@@ -141,6 +141,13 @@ class Engine(EngineBase):
         cache_config = ConfigBuilder.build_cache_config(engine_config)
         backend_config = ConfigBuilder.build_backend_config(engine_config)
         dist_config = ConfigBuilder.build_dist_config(engine_config)
+        if dist_config.dp_rank == 0:
+            logger.info(
+                'PyTorch parallel topology: '
+                f'world_size={dist_config.world_size}, dp={dist_config.dp}, '
+                f'attn_tp={dist_config.attn_tp}, mlp_tp={dist_config.mlp_tp}, '
+                f'moe_tp={dist_config.moe_tp}, ep={dist_config.ep}, '
+                f'dp_attention={dist_config.dp > 1}.')
         misc_config = ConfigBuilder.build_misc_config(engine_config)
         # spec decode
         self.specdecode_config = ConfigBuilder.build_specdecode_config(model_path,

@@ -355,12 +355,24 @@ def test_async_path_fails_closed():
         FusedMoEW4A16.wait(None, {})
 
 
-def test_ep_layer_builds_deepep_impl_and_local_weights(monkeypatch):
+@pytest.mark.parametrize(
+    'dp',
+    [
+        1,
+        8,
+    ],
+)
+def test_ep_layer_builds_deepep_impl_and_local_weights(
+        monkeypatch, dp):
     calls = {}
     ep_group = object()
     dist_config = SimpleNamespace(
-        dp=1,
+        dp=dp,
         ep=8,
+        attn_tp=1,
+        mlp_tp=8,
+        moe_tp=1,
+        world_size=8,
         enable_eplb=False,
         enable_microbatch=False,
     )
@@ -432,3 +444,58 @@ def test_ep_layer_builds_deepep_impl_and_local_weights(monkeypatch):
     assert layer.gate_up.weight_packed.shape[0] == 2
     assert layer.down.weight_packed.shape[0] == 2
     assert layer.all_reduce is False
+
+
+@pytest.mark.parametrize(
+    'attn_tp,dp,ep,mlp_tp,moe_tp,world_size,error',
+    [
+        (2, 8, 8, 8, 1, 8, 'requires attn_tp=1'),
+        (1, 8, 1, 8, 1, 8, 'requires expert parallelism'),
+        (1, 4, 8, 8, 1, 8,
+         'requires dp=ep=mlp_tp=world_size'),
+        (1, 8, 8, 4, 1, 8,
+         'requires dp=ep=mlp_tp=world_size'),
+        (1, 8, 8, 8, 2, 8,
+         'requires dp=ep=mlp_tp=world_size'),
+    ],
+)
+def test_dp_attention_rejects_unsupported_w4a16_topologies(
+        monkeypatch, attn_tp, dp, ep, mlp_tp, moe_tp, world_size, error):
+    dist_config = SimpleNamespace(
+        dp=dp,
+        ep=ep,
+        attn_tp=attn_tp,
+        mlp_tp=mlp_tp,
+        moe_tp=moe_tp,
+        world_size=world_size,
+        enable_eplb=False,
+        enable_microbatch=False,
+    )
+    dist_ctx = SimpleNamespace(dist_config=dist_config,
+                               ep_gpu_group=object())
+
+    def fake_init_dist_args(self, all_reduce):
+        self.ep = ep
+        self.tp = 1
+        self.tp_rank = 0
+        self.tp_mode = ct_moe.TPMode.DEFAULT
+        self.all_reduce = False
+        self.tp_group = None
+        self.gather_group = None
+
+    monkeypatch.setattr(FusedMoEW4A16, 'init_dist_args',
+                        fake_init_dist_args)
+    monkeypatch.setattr(
+        ct_moe,
+        'get_dist_manager',
+        lambda: SimpleNamespace(current_context=lambda: dist_ctx),
+    )
+
+    with pytest.raises(RuntimeError, match=error):
+        FusedMoEW4A16(
+            hidden_dim=64,
+            ffn_dim=256,
+            num_experts=16,
+            top_k=2,
+            dtype=torch.bfloat16,
+        )

@@ -1,5 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-"""Compressed-tensors W4A16 routed-expert weights and eager TP runtime.
+"""Compressed-tensors W4A16 routed-expert weights and distributed runtime.
 
 The checkpoint layout is kept intact: INT4 codes are packed along the logical
 K dimension into int32 words and every 32 values share one BF16 scale.  This
@@ -275,7 +275,7 @@ class CompressedTensorsMoEWeights(nn.Module):
 
 
 class FusedMoEW4A16(FusedMoEBase):
-    """Eager TP/DeepEP routed MoE operating directly on packed INT4 weights."""
+    """TP or DP-attention/DeepEP MoE over packed INT4 weights."""
 
     # The Kimi reference combines router-weighted expert outputs in FP32.
     # Preserve that accumulator through the single outer TP reduction.
@@ -306,9 +306,26 @@ class FusedMoEW4A16(FusedMoEBase):
         dist_ctx = get_dist_manager().current_context()
         dist_config = dist_ctx.dist_config
         if dist_config.dp > 1:
-            raise RuntimeError(
-                'Compressed-tensors W4A16 only supports tensor parallelism with DP=1.'
-            )
+            if dist_config.attn_tp != 1:
+                raise RuntimeError(
+                    'Compressed-tensors W4A16 DP attention currently requires '
+                    f'attn_tp=1, got attn_tp={dist_config.attn_tp}.')
+            if self.ep <= 1:
+                raise RuntimeError(
+                    'Compressed-tensors W4A16 DP attention requires expert '
+                    f'parallelism, got ep={self.ep}.')
+            expected_world_size = dist_config.world_size
+            if (dist_config.dp != expected_world_size
+                    or dist_config.ep != expected_world_size
+                    or dist_config.mlp_tp != expected_world_size
+                    or dist_config.moe_tp != 1):
+                raise RuntimeError(
+                    'Compressed-tensors W4A16 DP attention currently requires '
+                    'dp=ep=mlp_tp=world_size and moe_tp=1, got '
+                    f'dp={dist_config.dp}, ep={dist_config.ep}, '
+                    f'mlp_tp={dist_config.mlp_tp}, '
+                    f'moe_tp={dist_config.moe_tp}, '
+                    f'world_size={expected_world_size}.')
         if dist_config.enable_eplb:
             raise RuntimeError(
                 'Compressed-tensors W4A16 does not support EPLB.')
