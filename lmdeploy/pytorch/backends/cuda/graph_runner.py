@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import functools
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -24,6 +25,20 @@ from ..graph_runner import GraphRunner
 from .attention import TritonAttentionMetadata
 
 logger = get_logger('lmdeploy')
+
+
+@dataclass
+class CUDAGraphStats:
+    """Runtime statistics for CUDA graph dispatch."""
+
+    graph_hits: int = 0
+    graph_misses: int = 0
+    graph_recaptures: int = 0
+    eager_fallbacks: int = 0
+    forced_eager_decodes: int = 0
+    eager_prefills: int = 0
+    graph_pool_reserved_bytes: int | None = None
+    graph_pool_active_bytes: int | None = None
 
 
 def next_power_of_2(n: int):
@@ -210,12 +225,19 @@ class CUDAGraphRunner(GraphRunner):
 
         self.graph_pool_handle = torch.cuda.graph_pool_handle()
         self._runner_map: dict[Any, CUDASingleGraphRunner] = dict()
+        self._captured_graph_keys: set[Any] = set()
+        self._cudagraph_stats = CUDAGraphStats()
+        self._pool_memory_snapshot_supported: bool | None = None
+        self._logged_bs1_hit = False
+        self._logged_eager_fallback = False
         self.has_try_compile_model: bool = False
 
         # strategy factory
         build_ctx = model.ctx_mgr.build_ctx
         strategy_factory: StrategyFactoryBase = build_ctx.strategy_factory
         self.cudagraph_strategy = strategy_factory.build_cudagraph_strategy()
+        if self.backend_config.eager_mode:
+            logger.info('CUDA graph is disabled because eager_mode=True.')
 
     def check_enable_graph(self):
         """Check enable graph."""
@@ -274,6 +296,47 @@ class CUDAGraphRunner(GraphRunner):
         num_tokens = input_ids.size(1)
         return self.cudagraph_strategy.get_max_tokens(max_batches, origin_batch_size, num_tokens)
 
+    def _refresh_graph_pool_memory(self):
+        """Refresh graph-private pool memory statistics when supported."""
+        if self._pool_memory_snapshot_supported is False:
+            return
+
+        try:
+            segments = torch.cuda.memory_snapshot(self.graph_pool_handle)
+        except (RuntimeError, TypeError):
+            # The mempool_id argument is unavailable on older PyTorch releases.
+            self._pool_memory_snapshot_supported = False
+            return
+
+        self._pool_memory_snapshot_supported = True
+        self._cudagraph_stats.graph_pool_reserved_bytes = sum(segment.get('total_size', 0) for segment in segments)
+        self._cudagraph_stats.graph_pool_active_bytes = sum(segment.get('active_size', 0) for segment in segments)
+
+    def get_cudagraph_stats(self, refresh_pool: bool = False) -> dict[str, Any]:
+        """Return a snapshot of CUDA graph dispatch and memory statistics."""
+        if refresh_pool:
+            self._refresh_graph_pool_memory()
+
+        stats = self._cudagraph_stats
+        graph_requests = stats.graph_hits + stats.graph_misses
+        hit_rate = stats.graph_hits / graph_requests if graph_requests else None
+        reserved = stats.graph_pool_reserved_bytes
+        active = stats.graph_pool_active_bytes
+        pool_occupancy = active / reserved if reserved else None
+        return dict(
+            graph_hits=stats.graph_hits,
+            graph_misses=stats.graph_misses,
+            graph_hit_rate=hit_rate,
+            graph_recaptures=stats.graph_recaptures,
+            eager_fallbacks=stats.eager_fallbacks,
+            forced_eager_decodes=stats.forced_eager_decodes,
+            eager_prefills=stats.eager_prefills,
+            resident_graphs=len(self._runner_map),
+            graph_pool_reserved_bytes=reserved,
+            graph_pool_active_bytes=active,
+            graph_pool_occupancy=pool_occupancy,
+        )
+
     def __call__(self, **kwargs):
         """call."""
         if not self.backend_config.eager_mode and get_backend().get_name() == 'cuda':
@@ -286,9 +349,20 @@ class CUDAGraphRunner(GraphRunner):
             deepep_mode = DeepEPMode.LOW_LATENCY if context.global_is_decoding() else DeepEPMode.NORMAL
             DeepEPBuffer.set_deepep_mode(deepep_mode)
 
-        enable_graph = context.global_is_decoding() and self.enable_graph(**kwargs)
+        is_decoding = context.global_is_decoding()
+        enable_graph = is_decoding and self.enable_graph(**kwargs)
 
         if not enable_graph:
+            if not is_decoding:
+                self._cudagraph_stats.eager_prefills += 1
+            elif self.backend_config.eager_mode:
+                self._cudagraph_stats.forced_eager_decodes += 1
+            else:
+                self._cudagraph_stats.eager_fallbacks += 1
+                if not self._logged_eager_fallback:
+                    logger.warning('CUDA graph decode fell back to eager execution because the model rejected '
+                                   'the current inputs.')
+                    self._logged_eager_fallback = True
             with record_function('forward_eager'):
                 output = self.model(**kwargs)
                 return self.model.make_output_buffers(output)
@@ -298,6 +372,10 @@ class CUDAGraphRunner(GraphRunner):
         is_decoding = graph_key[1]
         decode_query_len = graph_key[3]
         if graph_key not in self._runner_map:
+            self._cudagraph_stats.graph_misses += 1
+            is_recapture = graph_key in self._captured_graph_keys
+            if is_recapture:
+                self._cudagraph_stats.graph_recaptures += 1
             max_tokens = self._get_max_tokens(graph_key, kwargs['input_ids'], kwargs['attn_metadata'].q_seqlens)
             runner = CUDASingleGraphRunner(
                 self.model,
@@ -314,9 +392,20 @@ class CUDAGraphRunner(GraphRunner):
             )
             output = runner.capture(**kwargs)
             self._runner_map[graph_key] = runner
+            self._captured_graph_keys.add(graph_key)
+            self._refresh_graph_pool_memory()
+            stats = self.get_cudagraph_stats()
+            logger.info(f'Captured CUDA graph key={graph_key}, recapture={is_recapture}, '
+                        f'resident_graphs={stats["resident_graphs"]}, '
+                        f'pool_reserved_bytes={stats["graph_pool_reserved_bytes"]}, '
+                        f'pool_active_bytes={stats["graph_pool_active_bytes"]}.')
             # SSM would update the state in capture(warmup), replay the graph will leads unexpected state update.
             return output
         else:
+            self._cudagraph_stats.graph_hits += 1
+            if max_batches == 1 and not self._logged_bs1_hit:
+                logger.info('CUDA graph BS=1 replay hit.')
+                self._logged_bs1_hit = True
             runner = self._runner_map[graph_key]
             output = runner.forward(**kwargs)
             return output
@@ -338,7 +427,12 @@ class CUDAGraphRunner(GraphRunner):
     def reset(self):
         """Remove all graphs to prevent hanging on exit."""
         super().reset()
+        had_graphs = bool(self._runner_map)
         self._runner_map.clear()
+        if hasattr(self, '_cudagraph_stats'):
+            self._refresh_graph_pool_memory()
+        if had_graphs and hasattr(self, '_cudagraph_stats'):
+            logger.info(f'Reset CUDA graphs: {self.get_cudagraph_stats()}.')
         if get_deepep_state().enabled():
             from lmdeploy.pytorch.backends.cuda.token_dispatcher import DeepEPBuffer
 
