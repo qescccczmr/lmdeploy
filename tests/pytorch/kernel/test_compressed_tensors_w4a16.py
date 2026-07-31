@@ -33,6 +33,102 @@ def _quality(actual: torch.Tensor,
     return nrmse, cosine
 
 
+def _reference_marlin_repack(weight_packed: torch.Tensor) -> torch.Tensor:
+    """Small, literal translation of Marlin's GPTQ INT4 tile repack."""
+    num_experts, out_features, packed_k = weight_packed.shape
+    in_features = packed_k * 8
+    result = torch.empty(
+        (num_experts, in_features // 16, out_features * 2),
+        dtype=torch.int32,
+        device='cpu',
+    )
+    source = weight_packed.cpu()
+    destination = result.view(num_experts, -1)
+    tc_offsets = (0, 1, 8, 9)
+    pack_idx = (0, 2, 4, 6, 1, 3, 5, 7)
+    n_tiles = out_features // 64
+
+    for expert_id in range(num_experts):
+        for k_tile in range(in_features // 16):
+            for n_tile in range(n_tiles):
+                tile_offset = (k_tile * n_tiles + n_tile) * 128
+                for lane_id in range(32):
+                    # The CUDA reference uses four warps. Iterate them
+                    # explicitly while keeping lane-local tensor-core rows.
+                    for warp_id in range(4):
+                        tc_col = lane_id // 4
+                        tc_row = (lane_id % 4) * 2
+                        current_n = n_tile * 64 + warp_id * 16 + tc_col
+                        values = []
+                        for n_delta in (0, 8):
+                            for k_delta in tc_offsets:
+                                source_k = k_tile * 16 + tc_row + k_delta
+                                word = int(source[expert_id,
+                                                  current_n + n_delta,
+                                                  source_k // 8])
+                                values.append((word >> ((source_k % 8) * 4))
+                                              & 0xF)
+                        packed = sum(values[index] << (nibble * 4)
+                                     for nibble, index in enumerate(pack_idx))
+                        if packed >= 1 << 31:
+                            packed -= 1 << 32
+                        destination[expert_id, tile_offset + lane_id * 4 +
+                                    warp_id] = packed
+    return result
+
+
+@pytest.mark.parametrize('num_experts,out_features,in_features',
+                         [(1, 64, 64), (2, 128, 256)])
+def test_w4a16_marlin_repack_matches_reference(num_experts, out_features,
+                                               in_features):
+    from lmdeploy.pytorch.kernels.cuda.marlin_moe_w4a16 import repack_w4a16_for_marlin
+
+    torch.manual_seed(11)
+    device = torch.device('cuda')
+    packed = torch.randint(
+        -(1 << 31),
+        (1 << 31) - 1,
+        (num_experts, out_features, in_features // 8),
+        dtype=torch.int32,
+        device=device,
+    )
+    scales = torch.randn(
+        num_experts,
+        out_features,
+        in_features // 32,
+        dtype=torch.bfloat16,
+        device=device,
+    )
+
+    actual_packed, actual_scales = repack_w4a16_for_marlin(packed, scales)
+    scale_permutation = torch.tensor(
+        [i + 8 * j for i in range(8) for j in range(8)],
+        device=device,
+    )
+    expected_scales = (scales.transpose(1, 2).contiguous().reshape(
+        -1, 64)[:, scale_permutation].reshape(
+            num_experts,
+            in_features // 32,
+            out_features,
+        ))
+
+    assert torch.equal(actual_packed.cpu(), _reference_marlin_repack(packed))
+    assert torch.equal(actual_scales, expected_scales)
+
+
+def test_w4a16_marlin_repack_rejects_unsupported_contract():
+    from lmdeploy.pytorch.kernels.cuda.marlin_moe_w4a16 import repack_w4a16_for_marlin
+
+    device = torch.device('cuda')
+    packed = torch.empty(1, 64, 8, dtype=torch.int32, device=device)
+    scales = torch.empty(1, 64, 2, dtype=torch.bfloat16, device=device)
+
+    with pytest.raises(ValueError, match='group_size=32'):
+        repack_w4a16_for_marlin(packed, scales, group_size=64)
+    with pytest.raises(ValueError, match='bfloat16 scales'):
+        repack_w4a16_for_marlin(packed, scales.half())
+
+
 @pytest.mark.parametrize('activation_dtype',
                          [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize('out_features,in_features',

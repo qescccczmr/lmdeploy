@@ -43,6 +43,8 @@ option(BUILD_PY_FFI "Build python ffi" ON)
 option(BUILD_TEST "Build tests" OFF)
 option(SPARSITY_SUPPORT "Build project with Ampere sparsity feature support" OFF)
 option(BUILD_FAST_MATH "Build in fast math mode" ON)
+option(BUILD_MARLIN_MOE_W4A16
+       "Build the optional SM90 W4A16 Marlin-MoE Python module" OFF)
 
 include(FetchContent)
 
@@ -377,3 +379,12 @@ if (BUILD_PY_FFI)
     install(TARGETS _xgrammar DESTINATION ${CMAKE_SOURCE_DIR}/lmdeploy/lib)
   endif()
 endif ()
+
+if (TARGET _marlin_moe_w4a16)
+  if (CALL_FROM_SETUP_PY)
+    install(TARGETS _marlin_moe_w4a16 DESTINATION ${CMAKE_INSTALL_PREFIX})
+  else()
+    install(TARGETS _marlin_moe_w4a16
+            DESTINATION ${CMAKE_SOURCE_DIR}/lmdeploy/lib)
+  endif()
+endif()

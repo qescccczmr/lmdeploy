@@ -151,6 +151,9 @@ if get_target_device() == 'cuda' and os.getenv('DISABLE_TURBOMIND', '').lower() 
                 '-DBUILD_PY_FFI=ON',
                 '-DBUILD_MULTI_GPU=' + ('OFF' if os.name == 'nt' else 'ON'),
                 '-DUSE_NVTX=' + ('OFF' if os.name == 'nt' else 'ON'),
+                '-DBUILD_MARLIN_MOE_W4A16=' +
+                ('ON' if os.getenv('BUILD_MARLIN_MOE_W4A16', '').lower()
+                 in ('yes', 'true', 'on', 't', '1') else 'OFF'),
             ],
         ),
     ]
