@@ -2,7 +2,7 @@
 from lmdeploy.pytorch.config import ModelConfig
 
 from .builder import AutoModelConfigBuilder
-from .utils import flash_mla_available
+from .utils import fa3_mla_available, flash_mla_available
 
 
 class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
@@ -24,12 +24,25 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
         tp = kwargs.get('tp', 1)
         # update num_kv_heads for tp mode
         num_key_value_heads = cls.update_num_kv_heads(hf_config, tp, num_key_value_heads)
-        hf_config.use_flash_mla = flash_mla_available()
-        num_layers = hf_config.num_hidden_layers
         model_paradigm = 'ar'
-
         if spec_method is not None:
             assert spec_method == 'deepseek_mtp'
+        if is_draft_model or spec_method is not None:
+            model_paradigm = 'ar_spec'
+
+        hf_config.use_flash_mla = flash_mla_available()
+        exact_fa3_mla_layout = (
+            head_dim == 576
+            and hf_config.kv_lora_rank == 512
+            and hf_config.qk_rope_head_dim == 64
+        )
+        hf_config.use_fa3_mla = (
+            model_paradigm == 'ar'
+            and not hf_config.use_flash_mla
+            and exact_fa3_mla_layout
+            and fa3_mla_available()
+        )
+        num_layers = hf_config.num_hidden_layers
 
         # draft model cfg
         if is_draft_model:
@@ -38,9 +51,6 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
             # remove for correct mapping when building the patched model
             if hasattr(hf_config, 'auto_map'):
                 del hf_config.auto_map
-
-        if is_draft_model or spec_method is not None:
-            model_paradigm = 'ar_spec'
 
         bos_token_id = getattr(hf_config, 'bos_token_id', None)
         config = ModelConfig(
@@ -55,6 +65,7 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
             v_head_dim=v_head_dim,
             vocab_size=hf_config.vocab_size,
             use_flash_mla=hf_config.use_flash_mla,
+            use_fa3_mla=hf_config.use_fa3_mla,
             model_paradigm=model_paradigm,
         )
         return config

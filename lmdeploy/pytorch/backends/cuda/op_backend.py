@@ -2,6 +2,7 @@
 
 import torch
 
+from lmdeploy.messages import QuantPolicy
 from lmdeploy.pytorch.config import BackendConfig, CacheConfig, ModelConfig
 from lmdeploy.utils import get_logger
 
@@ -139,8 +140,8 @@ class CudaOpsBackend(DefaultOpsBackend):
             attn_metadata.block_offsets = attn_metadata.block_offsets.to(torch.int32)
 
     @classmethod
-    def update_meta_flashattn(cls, attn_metadata, step_context):
-        from lmdeploy.pytorch.models.utils.cudagraph import _get_meta_flashattn
+    def update_meta_flashattn(cls, attn_metadata, step_context, use_fa3_mla: bool):
+        from lmdeploy.pytorch.models.utils.cudagraph import _get_flashattn_head_dims, _get_meta_flashattn
 
         from .attention import _normalize_sliding_window
         batch_size = attn_metadata.q_seqlens.size(0)
@@ -150,20 +151,27 @@ class CudaOpsBackend(DefaultOpsBackend):
         # page_table.size(1) * page_size when cu_seqlens_k is None
         # (paged KV without varlen_k). get_scheduler_metadata must use
         # the same value to produce a correctly-sized metadata buffer.
-        max_seqlen_k = attn_metadata.block_offsets.size(1) * step_context.model_config.block_size
+        block_size = step_context.cache_config.kernel_block_size
+        max_seqlen_k = attn_metadata.block_offsets.size(1) * block_size
         num_attention_heads, num_key_value_heads = step_context.model_config.get_num_qkv_head_by_tp()
+        headdim, headdim_v = _get_flashattn_head_dims(step_context.model_config, use_fa3_mla)
+        cache_seqlens = attn_metadata.kv_seqlens.to(torch.int32)
         scheduler_metadata = _get_meta_flashattn(
             batch_size=batch_size,
             max_seqlen_q=max_seqlen_q,
             max_seqlen_k=max_seqlen_k,
             num_heads_q=num_attention_heads,
             num_heads_kv=num_key_value_heads,
-            headdim=step_context.model_config.head_dim,
-            cache_seqlens=attn_metadata.kv_seqlens.to(torch.int32),
+            headdim=headdim,
+            headdim_v=headdim_v,
+            cache_seqlens=cache_seqlens,
             qkv_dtype=step_context.model_config.dtype,
-            page_size=step_context.model_config.block_size,
+            page_size=block_size,
             window_size=window_size,
         )
+        attn_metadata.kv_seqlens = cache_seqlens
+        if attn_metadata.block_offsets.dtype != torch.int32:
+            attn_metadata.block_offsets = attn_metadata.block_offsets.to(torch.int32)
         attn_metadata.scheduler_metadata = scheduler_metadata
         attn_metadata.max_kv_seqlen = max_seqlen_k
         return attn_metadata
@@ -207,7 +215,19 @@ class CudaOpsBackend(DefaultOpsBackend):
         kv_start_loc = None
         kv_flatten_size = None
         use_flash_mla = step_context.model_config.use_flash_mla
-        use_flash_attn3_decoding = step_context.model_config.model_paradigm == 'ar_spec'
+        batch_size = q_seqlens.size(0)
+        decode_query_len = step_context.input_ids.size(1) // batch_size
+        from .attention.fa3 import FA3_MLA_MAX_BATCH_SIZE
+        use_fa3_mla = (
+            step_context.model_config.use_fa3_mla
+            and step_context.model_config.model_paradigm == 'ar'
+            and decode_query_len == 1
+            and batch_size <= FA3_MLA_MAX_BATCH_SIZE
+            and step_context.model_config.dtype in (torch.float16, torch.bfloat16)
+            and step_context.kv_quant_policy == QuantPolicy.NONE
+        )
+        use_spec_fa3 = step_context.model_config.model_paradigm == 'ar_spec'
+        use_flash_attn3_decoding = use_spec_fa3 or use_fa3_mla
 
         # pad and cumsum requires 4 kernels, so we fuse seqlens cumsum into one kernel
         seqlens = torch.stack([q_seqlens, kv_seqlens], dim=0)
@@ -235,7 +255,6 @@ class CudaOpsBackend(DefaultOpsBackend):
         if step_context.is_decoding:
             if use_flash_mla:
                 model_config = step_context.model_config
-                decode_query_len = step_context.input_ids.size(1) // q_seqlens.size(0)
                 cls.update_meta_flashmla(attn_metadata, model_config, decode_query_len)
             elif use_flash_attn3_decoding:
                 from .attention import use_fa3
@@ -248,7 +267,7 @@ class CudaOpsBackend(DefaultOpsBackend):
                         f'flash-attn installed. Detected: SM{sm[0]}.{sm[1]}, CUDA {cuda_ver}. '
                         f'Please ensure your GPU meets SM80+, CUDA >= 12.3, and flash-attn '
                         f'is installed, or disable speculative decoding.')
-                attn_metadata = cls.update_meta_flashattn(attn_metadata, step_context)
+                attn_metadata = cls.update_meta_flashattn(attn_metadata, step_context, use_fa3_mla=use_fa3_mla)
 
         # update chunk gated delta indices
         is_gated_delta = step_context.model_config.is_gated_delta

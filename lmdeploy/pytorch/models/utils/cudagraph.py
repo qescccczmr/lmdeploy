@@ -51,6 +51,19 @@ def _get_meta_flashattn(
     return metadata
 
 
+def _get_flashattn_head_dims(model_config, use_fa3_mla: bool):
+    """Return the Q/K and V dimensions used by FA3 scheduler metadata."""
+    if not use_fa3_mla:
+        return model_config.head_dim, None
+
+    llm_config = model_config.llm_config
+    headdim = llm_config.qk_rope_head_dim
+    headdim_v = llm_config.kv_lora_rank
+    if headdim != 64 or headdim_v != 512 or model_config.head_dim != headdim + headdim_v:
+        raise ValueError('FA3 absorbed MLA requires head dimensions 64/512.')
+    return headdim, headdim_v
+
+
 def next_power_of_2(n: int):
     """Return the smallest power of 2 greater than or equal to n."""
     n -= 1
@@ -77,6 +90,7 @@ class CudaGraphMeta:
     vocab_size: int = 1
     use_mla_fp8_cache: bool = False
     use_flash_mla: bool = False
+    use_fa3_mla: bool = False
     mla_index_topk: int | None = None
     decode_query_len: int = 1
     use_fa3_decoding: bool = False
@@ -111,14 +125,14 @@ class CudaGraphMixin:
         return output_buffers
 
     def update_meta_flashattn(self, batch_size: int, max_seqlen_q: int, block_size: int, max_seqlen_k: int,
-                              cache_seqlens: torch.Tensor):
+                              cache_seqlens: torch.Tensor, use_fa3_mla: bool):
         """Update meta flashattn."""
         ctx_mgr = get_step_ctx_manager()
         step_ctx = ctx_mgr.current_context()
         model_config = step_ctx.model_config
         sliding_window = model_config.sliding_window
         num_attention_heads, num_key_value_heads = model_config.get_num_qkv_head_by_tp()
-        headdim = model_config.head_dim
+        headdim, headdim_v = _get_flashattn_head_dims(model_config, use_fa3_mla)
         torch_dtype = model_config.dtype
         if sliding_window is None:
             window_size = (-1, -1)
@@ -135,6 +149,7 @@ class CudaGraphMixin:
             num_heads_q=num_attention_heads,
             num_heads_kv=num_key_value_heads,
             headdim=headdim,
+            headdim_v=headdim_v,
             cache_seqlens=cache_seqlens,
             qkv_dtype=torch_dtype,
             page_size=block_size,
@@ -190,14 +205,15 @@ class CudaGraphMixin:
                 is_fp8_kvcache=graph_meta.use_mla_fp8_cache,
                 topk=index_topk)
 
-        # use fa3 decode kernel for spec decode
+        # Preallocate stable scheduler metadata storage for FA3 decoding.
         elif graph_meta.use_fa3_decoding is True:
             max_seqlen_k = graph_meta.num_blocks * graph_meta.block_size
             input_buffers['scheduler_metadata'] = self.update_meta_flashattn(graph_meta.max_batchs,
                                                                              graph_meta.decode_query_len,
                                                                              block_size=graph_meta.block_size,
                                                                              max_seqlen_k=max_seqlen_k,
-                                                                             cache_seqlens=input_buffers['kv_seqlens'])
+                                                                             cache_seqlens=input_buffers['kv_seqlens'],
+                                                                             use_fa3_mla=graph_meta.use_fa3_mla)
 
         # mrope
         if graph_meta.use_mrope:
@@ -278,7 +294,7 @@ class CudaGraphMixin:
             attn_metadata.tile_scheduler_metadata = input_buffers['tile_scheduler_metadata']
             attn_metadata.num_splits = input_buffers['num_splits']
 
-        # use fa3 decode kernel for spec decode
+        # Refresh FA3 scheduler metadata outside the captured graph.
         elif graph_meta.use_fa3_decoding is True:
             # FA3's mha_fwd internally computes seqlen_k = page_table.size(1) * page_size
             # where page_table is the (padded) block_offsets buffer. We must use
@@ -291,11 +307,15 @@ class CudaGraphMixin:
                 block_size=graph_meta.block_size,
                 max_seqlen_k=max_seqlen_k,
                 cache_seqlens=input_buffers['kv_seqlens'],
+                use_fa3_mla=graph_meta.use_fa3_mla,
             )
             num_meta = scheduler_metadata.size(0)
-            input_buffers['scheduler_metadata'][:num_meta] = scheduler_metadata
-            input_buffers['scheduler_metadata'][num_meta:] = 0
-            attn_metadata.scheduler_metadata = input_buffers['scheduler_metadata'][:num_meta]
+            metadata_buffer = input_buffers['scheduler_metadata']
+            if num_meta > metadata_buffer.size(0):
+                raise RuntimeError('FA3 scheduler metadata exceeded its CUDA Graph buffer.')
+            metadata_buffer[:num_meta].copy_(scheduler_metadata)
+            metadata_buffer[num_meta:].zero_()
+            attn_metadata.scheduler_metadata = metadata_buffer[:num_meta]
 
         new_inputs = dict(
             past_key_values=past_key_values,

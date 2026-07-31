@@ -8,6 +8,8 @@ from .default import TritonAttentionImpl, TritonAttentionMetadata, _cdiv
 
 logger = get_logger('lmdeploy')
 
+FA3_MLA_MAX_BATCH_SIZE = 8
+
 
 class FA3AbsorbedMLAImpl(TritonAttentionImpl):
     """FA3 decoding for absorbed multi-head latent attention.
@@ -24,7 +26,7 @@ class FA3AbsorbedMLAImpl(TritonAttentionImpl):
     _LATENT_HEAD_SIZE = 512
     _ROPE_HEAD_SIZE = 64
     _HEAD_SIZE = _LATENT_HEAD_SIZE + _ROPE_HEAD_SIZE
-    _MAX_DECODE_BATCH_SIZE = 8
+    _MAX_DECODE_BATCH_SIZE = FA3_MLA_MAX_BATCH_SIZE
 
     def __init__(
         self,
@@ -151,7 +153,7 @@ class FA3AbsorbedMLAImpl(TritonAttentionImpl):
             causal=self.causal,
             window_size=(-1, -1),
             softcap=max(self.logit_softcapping, 0.0),
-            scheduler_metadata=None,
+            scheduler_metadata=attn_metadata.scheduler_metadata,
             num_splits=0,
         )
         return output.flatten(0, 1)

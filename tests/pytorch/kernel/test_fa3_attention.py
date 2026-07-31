@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import pytest
 import torch
 
 from lmdeploy.messages import QuantPolicy
@@ -119,6 +120,7 @@ def test_fa3_absorbed_mla_decode_splits_latent_and_rope():
         q_seqlens=torch.ones(batch_size, dtype=torch.int64),
         kv_seqlens=torch.full((batch_size, ), 63, dtype=torch.int64),
         quant_policy=QuantPolicy.NONE,
+        scheduler_metadata=torch.arange(4, dtype=torch.int32),
     )
     captured = {}
 
@@ -152,7 +154,7 @@ def test_fa3_absorbed_mla_decode_splits_latent_and_rope():
     assert captured['causal'] is True
     assert captured['window_size'] == (-1, -1)
     assert captured['softcap'] == 0.0
-    assert captured['scheduler_metadata'] is None
+    assert captured['scheduler_metadata'] is metadata.scheduler_metadata
     assert captured['num_splits'] == 0
 
 
@@ -190,6 +192,76 @@ def test_fa3_absorbed_mla_decode_large_batch_falls_back():
     )
 
     assert output.shape == (batch_size, impl.num_heads, 512)
+    assert captured['query'] is query
+
+
+@pytest.mark.parametrize(
+    ('dtype', 'quant_policy'),
+    [
+        (torch.float32, QuantPolicy.NONE),
+        (torch.bfloat16, QuantPolicy.INT8),
+    ],
+)
+def test_fa3_absorbed_mla_decode_dtype_and_quant_fall_back(dtype, quant_policy):
+    impl = _make_absorbed_mla_impl()
+    batch_size = 2
+    query = torch.empty((batch_size, impl.num_heads, 576), dtype=dtype)
+    k_cache = torch.empty((batch_size, 32, 1, 576), dtype=dtype)
+    v_cache = k_cache[..., :512]
+    metadata = TritonAttentionMetadata(
+        is_decoding=True,
+        block_offsets=torch.arange(batch_size, dtype=torch.int32).view(batch_size, 1),
+        q_seqlens=torch.ones(batch_size, dtype=torch.int32),
+        kv_seqlens=torch.full((batch_size, ), 31, dtype=torch.int32),
+        quant_policy=quant_policy,
+    )
+    captured = {}
+
+    def fake_paged_attention(query_arg, *args, **kwargs):
+        captured['query'] = query_arg
+        return torch.empty(query_arg.shape[:-1] + (512, ), dtype=query_arg.dtype)
+
+    def fail_fa3_decode(*args, **kwargs):
+        raise AssertionError('incompatible dtype or quantized cache must fall back to Triton')
+
+    impl.paged_attention_fwd = fake_paged_attention
+    impl.flash_attn_with_kvcache_v3 = fail_fa3_decode
+
+    output = impl._forward_decoding(query, k_cache, v_cache, metadata, max_q_seqlen=1)
+
+    assert output.shape == (batch_size, impl.num_heads, 512)
+    assert captured['query'] is query
+
+
+def test_fa3_absorbed_mla_multi_token_decode_falls_back():
+    impl = _make_absorbed_mla_impl()
+    batch_size = 2
+    query_len = 2
+    query = torch.empty((batch_size * query_len, impl.num_heads, 576), dtype=torch.bfloat16)
+    k_cache = torch.empty((batch_size, 32, 1, 576), dtype=torch.bfloat16)
+    v_cache = k_cache[..., :512]
+    metadata = TritonAttentionMetadata(
+        is_decoding=True,
+        block_offsets=torch.arange(batch_size, dtype=torch.int32).view(batch_size, 1),
+        q_seqlens=torch.full((batch_size, ), query_len, dtype=torch.int32),
+        kv_seqlens=torch.full((batch_size, ), 31, dtype=torch.int32),
+        quant_policy=QuantPolicy.NONE,
+    )
+    captured = {}
+
+    def fake_paged_attention(query_arg, *args, **kwargs):
+        captured['query'] = query_arg
+        return torch.empty(query_arg.shape[:-1] + (512, ), dtype=query_arg.dtype)
+
+    def fail_fa3_decode(*args, **kwargs):
+        raise AssertionError('multi-token absorbed MLA must fall back to Triton')
+
+    impl.paged_attention_fwd = fake_paged_attention
+    impl.flash_attn_with_kvcache_v3 = fail_fa3_decode
+
+    output = impl._forward_decoding(query, k_cache, v_cache, metadata, max_q_seqlen=query_len)
+
+    assert output.shape == (batch_size * query_len, impl.num_heads, 512)
     assert captured['query'] is query
 
 
@@ -266,6 +338,7 @@ def test_fa3_absorbed_mla_builder_contract_and_fallback(monkeypatch):
     cuda_attention._enable_fa3_absorbed_mla.cache_clear()
     monkeypatch.setattr(cuda_attention, '_fa3_absorbed_mla_available', lambda: True)
     compatible = dict(
+        use_fa3_mla=True,
         head_size=576,
         v_head_size=512,
         num_kv_heads=1,
@@ -279,6 +352,7 @@ def test_fa3_absorbed_mla_builder_contract_and_fallback(monkeypatch):
     )
     assert cuda_attention._enable_fa3_absorbed_mla(**compatible)
     for name, value in (
+        ('use_fa3_mla', False),
         ('head_size', 575),
         ('v_head_size', 511),
         ('num_kv_heads', 2),
@@ -326,3 +400,42 @@ def test_fa3_absorbed_mla_builder_contract_and_fallback(monkeypatch):
         v_head_size=512,
     )
     assert isinstance(fallback, DummyTriton)
+
+
+def test_fa3_absorbed_mla_tp8_builder_receives_one_local_kv_head(monkeypatch):
+    import lmdeploy.pytorch.backends.cuda.attention as cuda_attention
+    import lmdeploy.pytorch.backends.cuda.attention.fa3 as fa3_attention
+    import lmdeploy.pytorch.nn.attention as nn_attention
+
+    captured = {}
+
+    class DummyAbsorbedMLA:
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class DummyBackend:
+
+        @staticmethod
+        def get_layer_impl_builder(_layer_type):
+            return cuda_attention.TritonAttentionBuilder
+
+    monkeypatch.setattr(nn_attention, '_update_num_heads', lambda num_heads, num_kv_heads: (num_heads // 8,
+                                                                                          num_kv_heads // 8))
+    monkeypatch.setattr(nn_attention, 'get_backend', lambda: DummyBackend())
+    monkeypatch.setattr(cuda_attention, '_enable_fa3', lambda *args, **kwargs: False)
+    monkeypatch.setattr(cuda_attention, '_enable_fa3_absorbed_mla', lambda *args, **kwargs: True)
+    monkeypatch.setattr(fa3_attention, 'FA3AbsorbedMLAImpl', DummyAbsorbedMLA)
+
+    attention = nn_attention.Attention(
+        num_heads=64,
+        head_size=576,
+        num_kv_heads=8,
+        v_head_size=512,
+        use_fa3_mla=True,
+    )
+
+    assert isinstance(attention.impl, DummyAbsorbedMLA)
+    assert attention.num_heads == 8
+    assert captured['num_heads'] == 8
+    assert captured['num_kv_heads'] == 1

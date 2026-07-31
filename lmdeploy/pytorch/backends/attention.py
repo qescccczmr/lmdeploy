@@ -41,6 +41,7 @@ class AttentionImpl(ABC, Generic[T]):
         logit_softcapping: float = 0.0,
         causal: bool = True,
         use_flash_mla: bool = False,
+        use_fa3_mla: bool = False,
         **kwargs,
     ) -> None:
         if scale is None:
@@ -62,6 +63,7 @@ class AttentionImpl(ABC, Generic[T]):
         self.logit_softcapping = logit_softcapping
         self.causal = causal
         self.use_flash_mla = use_flash_mla
+        self.use_fa3_mla = use_fa3_mla
         self.alibi_slopes = None
 
     @staticmethod
@@ -122,6 +124,7 @@ class AttentionBuilder(ABC, Generic[T]):
         logit_softcapping: float = 0.0,
         causal: bool = True,
         use_flash_mla: bool = False,
+        use_fa3_mla: bool = False,
         learnable_sink: bool = False,
         block_sparse_size: int = 1,
         **kwargs,

@@ -64,6 +64,7 @@ def _fa3_absorbed_mla_available() -> bool:
 
 @functools.lru_cache
 def _enable_fa3_absorbed_mla(
+    use_fa3_mla: bool,
     head_size: int,
     v_head_size: int,
     num_kv_heads: int,
@@ -77,7 +78,8 @@ def _enable_fa3_absorbed_mla(
 ) -> bool:
     """Check the strict contract for FA3 absorbed MLA decoding."""
     enable = (
-        not use_flash_mla
+        use_fa3_mla
+        and not use_flash_mla
         and head_size == 576
         and v_head_size == 512
         and num_kv_heads == 1
@@ -130,6 +132,7 @@ class TritonAttentionBuilder(AttentionBuilder[TritonAttentionMetadata]):
         logit_softcapping: float = 0.0,
         causal: bool = True,
         use_flash_mla: bool = False,
+        use_fa3_mla: bool = False,
         learnable_sink: bool = False,
         block_sparse_size: int = 1,
         **kwargs,
@@ -172,6 +175,7 @@ class TritonAttentionBuilder(AttentionBuilder[TritonAttentionMetadata]):
         )
         enable_fa3 = _enable_fa3(alibi, learnable_sink, block_sparse_size, head_size)
         enable_fa3_absorbed_mla = _enable_fa3_absorbed_mla(
+            use_fa3_mla,
             head_size,
             v_head_size,
             num_kv_heads,
