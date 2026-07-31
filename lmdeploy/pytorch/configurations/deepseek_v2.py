@@ -5,6 +5,20 @@ from .builder import AutoModelConfigBuilder
 from .utils import fa3_mla_available, flash_mla_available
 
 
+def _enable_kimi_fused_qkv_a_proj(hf_config) -> bool:
+    """Return whether Kimi can merge its replicated MLA A projections."""
+    dtype = str(getattr(hf_config, 'dtype', '')).removeprefix('torch.')
+    return (
+        getattr(hf_config, 'model_type', None) == 'kimi_k2'
+        and getattr(hf_config, 'q_lora_rank', None) is not None
+        and getattr(hf_config, 'hidden_size', None) == 7168
+        and hf_config.q_lora_rank == 1536
+        and getattr(hf_config, 'kv_lora_rank', None) == 512
+        and getattr(hf_config, 'qk_rope_head_dim', None) == 64
+        and dtype in {'bfloat16', 'float16'}
+    )
+
+
 class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
 
     @classmethod
@@ -15,6 +29,7 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
     @classmethod
     def build(cls, hf_config, model_path: str = None, is_draft_model: bool = False, spec_method: str = None, **kwargs):
         """build."""
+        hf_config.fuse_qkv_a_proj = _enable_kimi_fused_qkv_a_proj(hf_config)
         head_dim = (hf_config.kv_lora_rank + hf_config.qk_rope_head_dim)
         k_head_dim = head_dim
         v_head_dim = 0

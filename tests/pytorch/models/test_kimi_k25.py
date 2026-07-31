@@ -161,6 +161,35 @@ def test_wrapper_delegates_tiny_bf16_prefill_and_decode(tiny_model):
     assert tiny_model.language_model.last_forward == (past_key_values, decode_context.attn_metadata)
 
 
+def test_wrapper_propagates_language_model_packed_mapping(monkeypatch):
+    import lmdeploy.pytorch.models.kimi_k25 as kimi_k25
+
+    fused_mapping = ['q_a_proj', 'kv_a_proj_with_mqa']
+    monkeypatch.setattr(
+        _TinyLanguageModel,
+        'packed_modules_mapping',
+        {'fused_qkv_a_proj_with_mqa': fused_mapping},
+        raising=False,
+    )
+    monkeypatch.setattr(kimi_k25, 'DeepseekV2ForCausalLM', _TinyLanguageModel)
+    monkeypatch.setattr(
+        kimi_k25,
+        'get_build_model_context',
+        lambda: SimpleNamespace(language_model_only=True),
+    )
+
+    model = KimiK25ForConditionalGeneration(
+        _make_config(),
+        StepContextManager(),
+        dtype=torch.bfloat16,
+        device=torch.device('cpu'),
+    )
+
+    assert model.packed_modules_mapping['gate_up_proj'] == ['gate_proj', 'up_proj']
+    assert model.packed_modules_mapping['fused_qkv_a_proj_with_mqa'] == fused_mapping
+    assert model.packed_modules_mapping['fused_qkv_a_proj_with_mqa'] is not fused_mapping
+
+
 def test_weight_prefix_conversion_is_lazy_and_skips_m2_vision(tiny_model):
     state = SimpleNamespace(pulled=0)
     language_weight = torch.ones(2, 2)

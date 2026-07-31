@@ -30,6 +30,7 @@ from lmdeploy.pytorch.nn.linear import (
     build_colwise_linear,
     build_down_linear,
     build_gateup_linear,
+    build_merged_colwise_linear,
     build_o_proj,
     build_rowwise_linear,
 )
@@ -54,6 +55,32 @@ _COMPRESSED_TENSORS_EXPERT_PROJECTIONS = {
     'up_proj': ('gate_up', 'up'),
     'down_proj': ('down', 'down'),
 }
+
+
+def _use_kimi_fused_qkv_a_proj(config: Any, dtype: torch.dtype | None, prefix: str) -> bool:
+    """Check the Kimi BF16/FP16 replicated MLA A-projection contract."""
+    if not getattr(config, 'fuse_qkv_a_proj', False):
+        return False
+    resolved_dtype = dtype if dtype is not None else getattr(config, 'dtype', None)
+    dtype_name = str(resolved_dtype).removeprefix('torch.')
+    if (
+        getattr(config, 'model_type', None) != 'kimi_k2'
+        or getattr(config, 'q_lora_rank', None) is None
+        or getattr(config, 'hidden_size', None) != 7168
+        or config.q_lora_rank != 1536
+        or getattr(config, 'kv_lora_rank', None) != 512
+        or getattr(config, 'qk_rope_head_dim', None) != 64
+        or dtype_name not in {'bfloat16', 'float16'}
+    ):
+        return False
+
+    quant_config = get_build_model_context().quant_config
+    source_prefixes = (
+        add_prefix('q_a_proj', prefix),
+        add_prefix('kv_a_proj_with_mqa', prefix),
+    )
+    return all(quant_config.get_quant_method(source_prefix, module_kind='linear') is None
+               for source_prefix in source_prefixes)
 
 
 # microbatch
@@ -418,6 +445,7 @@ class DeepseekV2Attention(nn.Module):
         num_key_value_heads = getattr(config, 'num_key_value_heads', 1)
         use_flash_mla = getattr(config, 'use_flash_mla', False)
         use_fa3_mla = getattr(config, 'use_fa3_mla', False)
+        self.fuse_qkv_a_proj = _use_kimi_fused_qkv_a_proj(config, dtype, prefix)
 
         if self.q_lora_rank is None:
             self.q_proj = build_colwise_linear(
@@ -432,16 +460,31 @@ class DeepseekV2Attention(nn.Module):
                 prefix=add_prefix('q_proj', prefix),
             )
         else:
-            self.q_a_proj = build_colwise_linear(
-                self.hidden_size,
-                config.q_lora_rank,
-                bias=config.attention_bias,
-                dtype=dtype,
-                device=device,
-                is_tp=False,
-                quant_config=quantization_config,
-                prefix=add_prefix('q_a_proj', prefix),
-            )
+            if self.fuse_qkv_a_proj:
+                self.fused_qkv_a_proj_with_mqa = build_merged_colwise_linear(
+                    self.hidden_size,
+                    [config.q_lora_rank, config.kv_lora_rank + config.qk_rope_head_dim],
+                    bias=config.attention_bias,
+                    dtype=dtype,
+                    device=device,
+                    is_tp=False,
+                    out_names=['q', 'kv'],
+                    quant_config=quantization_config,
+                    check_dist=False,
+                    layer_type='attn',
+                    prefix=add_prefix('fused_qkv_a_proj_with_mqa', prefix),
+                )
+            else:
+                self.q_a_proj = build_colwise_linear(
+                    self.hidden_size,
+                    config.q_lora_rank,
+                    bias=config.attention_bias,
+                    dtype=dtype,
+                    device=device,
+                    is_tp=False,
+                    quant_config=quantization_config,
+                    prefix=add_prefix('q_a_proj', prefix),
+                )
             self.q_a_layernorm = RMSNorm(config.q_lora_rank,
                                          1e-6,
                                          quant_config=quantization_config,
@@ -460,16 +503,17 @@ class DeepseekV2Attention(nn.Module):
                 prefix=add_prefix('q_b_proj', prefix),
             )
 
-        self.kv_a_proj_with_mqa = build_colwise_linear(
-            self.hidden_size,
-            config.kv_lora_rank + config.qk_rope_head_dim,
-            bias=config.attention_bias,
-            dtype=dtype,
-            device=device,
-            is_tp=False,
-            quant_config=quantization_config,
-            prefix=add_prefix('kv_a_proj_with_mqa', prefix),
-        )
+        if not self.fuse_qkv_a_proj:
+            self.kv_a_proj_with_mqa = build_colwise_linear(
+                self.hidden_size,
+                config.kv_lora_rank + config.qk_rope_head_dim,
+                bias=config.attention_bias,
+                dtype=dtype,
+                device=device,
+                is_tp=False,
+                quant_config=quantization_config,
+                prefix=add_prefix('kv_a_proj_with_mqa', prefix),
+            )
         self.kv_a_layernorm = RMSNorm(config.kv_lora_rank,
                                       1e-6,
                                       quant_config=quantization_config,
@@ -515,7 +559,12 @@ class DeepseekV2Attention(nn.Module):
             prefix=add_prefix('o_proj', prefix),
         )
 
-    def _q_proj(self, hidden_states, num_heads: int, nope_size: int, pe_size: int):
+    def _q_proj(self,
+                hidden_states,
+                num_heads: int,
+                nope_size: int,
+                pe_size: int,
+                q_a_states: torch.Tensor | None = None):
         """Q proj."""
         q_len = hidden_states.size(1)
 
@@ -524,7 +573,9 @@ class DeepseekV2Attention(nn.Module):
         if self.q_lora_rank is None:
             q = self.q_proj(hidden_states)
         else:
-            q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))
+            if q_a_states is None:
+                q_a_states = self.q_a_proj(hidden_states)
+            q = self.q_b_proj(self.q_a_layernorm(q_a_states))
         q = q.view(q_len, num_heads, self.q_head_dim)
         # q_pe: (q_len, num_heads, qk_rope_head_dim)
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
@@ -533,10 +584,13 @@ class DeepseekV2Attention(nn.Module):
         self.kc(q_nope, q_nope_out)
         return query_states, q_pe
 
-    def _kv_proj(self, hidden_states, nope_size: int):
+    def _kv_proj(self, hidden_states, nope_size: int, kv_a_states: torch.Tensor | None = None):
         """Kv proj."""
         # (q_len, 1, nope_size + pe_size)
-        key_states = self.kv_a_proj_with_mqa(hidden_states[0, :, None])
+        if kv_a_states is None:
+            key_states = self.kv_a_proj_with_mqa(hidden_states[0, :, None])
+        else:
+            key_states = kv_a_states[0, :, None]
         # (q_len, 1, pe_size)
         k_pe = key_states[..., nope_size:]
         # kv_a_layernorm
@@ -549,8 +603,23 @@ class DeepseekV2Attention(nn.Module):
         """Qkv proj."""
         nope_size = self.kv_lora_rank
         pe_size = self.qk_rope_head_dim
-        query_states, q_pe = self._q_proj(hidden_states, num_heads, nope_size, pe_size)
-        key_states, value_states, k_pe = self._kv_proj(hidden_states, nope_size)
+        q_a_states = None
+        kv_a_states = None
+        if getattr(self, 'fuse_qkv_a_proj', False):
+            fused_states = self.fused_qkv_a_proj_with_mqa(hidden_states)
+            q_a_states, kv_a_states = fused_states.split([self.q_lora_rank, nope_size + pe_size], dim=-1)
+        query_states, q_pe = self._q_proj(
+            hidden_states,
+            num_heads,
+            nope_size,
+            pe_size,
+            q_a_states=q_a_states,
+        )
+        key_states, value_states, k_pe = self._kv_proj(
+            hidden_states,
+            nope_size,
+            kv_a_states=kv_a_states,
+        )
 
         return query_states, key_states, value_states, q_pe, k_pe
 
@@ -1344,6 +1413,8 @@ class DeepseekV2Model(nn.Module):
 class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
     """Mixture model for causalLM."""
 
+    packed_modules_mapping = {}
+
     def __init__(self,
                  config: Any,
                  ctx_mgr: StepContextManager,
@@ -1361,6 +1432,12 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
             device=device,
             prefix=add_prefix('model', prefix),
         )
+        self.packed_modules_mapping = {}
+        if any(getattr(layer.self_attn, 'fuse_qkv_a_proj', False) for layer in self.model.layers):
+            self.packed_modules_mapping['fused_qkv_a_proj_with_mqa'] = [
+                'q_a_proj',
+                'kv_a_proj_with_mqa',
+            ]
         # build lm_head
         self.lm_head = build_rowwise_linear(config.hidden_size,
                                             config.vocab_size,
@@ -1635,6 +1712,27 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 dtype = params_dict[kc_param_name].dtype
                 weight = __dequant_weight(weight, scale, dtype)
                 __load_kcvc(weight_name, weight)
+
+        fused_a_proj_mapping = (
+            ('q_a_proj', 'q'),
+            ('kv_a_proj_with_mqa', 'kv'),
+        )
+        for source_name, shard_id in fused_a_proj_mapping:
+            source_marker = f'.{source_name}.'
+            if source_marker not in name:
+                continue
+            fused_name = name.replace(source_marker, '.fused_qkv_a_proj_with_mqa.')
+            if fused_name not in params_dict:
+                break
+            weight = loaded_weight
+            if source_name == 'kv_a_proj_with_mqa' and not name.endswith('.weight_scale_inv'):
+                weight = __update_pe(
+                    loaded_weight.to(device),
+                    self.config.kv_lora_rank + self.config.qk_rope_head_dim,
+                    self.config.kv_lora_rank,
+                )
+            load_weight(params_dict[fused_name], weight, shard_id=shard_id)
+            return
 
         for (mod_name, head_dim, pe_dim_offset) in update_pe_mapping:
             if mod_name not in name:

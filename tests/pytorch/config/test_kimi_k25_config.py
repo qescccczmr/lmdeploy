@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from lmdeploy.archs import check_vl_llm
 from lmdeploy.pytorch.configurations import AutoModelConfigBuilder
@@ -77,6 +78,7 @@ def test_kimi_k25_config_builder_uses_deepseek_mla(monkeypatch, tp, expected_kv_
     assert config.use_flash_mla is False
     assert config.use_fa3_mla is False
     assert text_config.use_fa3_mla is False
+    assert text_config.fuse_qkv_a_proj is True
     assert config.model_paradigm == 'ar'
     assert config.vocab_size == 163840
     assert config.hf_config is outer_config
@@ -86,6 +88,39 @@ def test_kimi_k25_config_builder_uses_deepseek_mla(monkeypatch, tp, expected_kv_
         assert not hasattr(text_config, 'num_replicate_key_value_heads')
     else:
         assert text_config.num_replicate_key_value_heads == expected_replicate
+
+
+@pytest.mark.parametrize('dtype', ['bfloat16', 'float16', torch.bfloat16, torch.float16])
+def test_kimi_k25_config_builder_enables_exact_fused_qkv_a(monkeypatch, dtype):
+    _patch_mla_availability(monkeypatch)
+    outer_config, text_config = _make_kimi_k25_config()
+    text_config.dtype = dtype
+
+    AutoModelConfigBuilder.build(outer_config, tp=8)
+
+    assert text_config.fuse_qkv_a_proj is True
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    [
+        ('model_type', 'deepseek_v3'),
+        ('q_lora_rank', None),
+        ('hidden_size', 7167),
+        ('q_lora_rank', 1535),
+        ('kv_lora_rank', 511),
+        ('qk_rope_head_dim', 32),
+        ('dtype', 'float32'),
+    ],
+)
+def test_kimi_k25_config_builder_disables_non_exact_fused_qkv_a(monkeypatch, field, value):
+    _patch_mla_availability(monkeypatch)
+    outer_config, text_config = _make_kimi_k25_config()
+    setattr(text_config, field, value)
+
+    AutoModelConfigBuilder.build(outer_config, tp=8)
+
+    assert text_config.fuse_qkv_a_proj is False
 
 
 def test_kimi_k25_config_builder_propagates_outer_quant_config(monkeypatch):

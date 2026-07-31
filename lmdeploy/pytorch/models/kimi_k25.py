@@ -169,6 +169,10 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
                  dtype: torch.dtype = None,
                  device: torch.device = None):
         super().__init__()
+        self.packed_modules_mapping = {
+            name: list(source_names)
+            for name, source_names in type(self).packed_modules_mapping.items()
+        }
         if not hasattr(config, 'text_config'):
             raise ValueError('KimiK25 config must define `text_config`.')
 
@@ -214,6 +218,10 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
             device=device,
             prefix='language_model',
         )
+        language_packed_mapping = getattr(self.language_model, 'packed_modules_mapping', {})
+        fused_a_mapping = language_packed_mapping.get('fused_qkv_a_proj_with_mqa')
+        if fused_a_mapping is not None:
+            self.packed_modules_mapping['fused_qkv_a_proj_with_mqa'] = list(fused_a_mapping)
         self.input_processor = KimiK25InputProcessor(config, dtype=dtype)
 
     @staticmethod
