@@ -212,6 +212,112 @@ def test_parameters_keep_checkpoint_layout_without_full_bf16_weights(
         assert [name for name, _ in floating] == ['weight_scale']
 
 
+def test_runtime_layout_preserves_parameters_storage_and_restores_for_reload(
+        monkeypatch):
+    weights = _make_weights(monkeypatch, 0, 'gate_up', tp_size=_TP)
+    for shard_id in ('gate', 'up'):
+        for part, value in _projection_parts(shard_id).items():
+            _load_part(weights, 0, shard_id, part, value)
+    weights.validate_complete()
+
+    packed_param = weights.weight_packed
+    scale_param = weights.weight_scale
+    packed_ptr = packed_param.data_ptr()
+    scale_ptr = scale_param.data_ptr()
+    packed_runtime = torch.arange(
+        packed_param.numel(), dtype=packed_param.dtype).reshape(1, 4, 128)
+    scale_runtime = torch.arange(
+        scale_param.numel(), dtype=torch.float32).to(
+            scale_param.dtype).reshape(1, 2, 64)
+
+    weights.replace_runtime_layout_(packed_runtime, scale_runtime, 'marlin')
+
+    assert weights.weight_packed is packed_param
+    assert weights.weight_scale is scale_param
+    assert weights.weight_packed.data_ptr() == packed_ptr
+    assert weights.weight_scale.data_ptr() == scale_ptr
+    assert weights.runtime_layout == 'marlin'
+    assert torch.equal(weights.weight_packed, packed_runtime)
+    assert torch.equal(weights.weight_scale, scale_runtime)
+
+    gate = _projection_parts('gate')
+    _load_part(weights, 0, 'gate', 'weight_packed', gate['weight_packed'])
+
+    assert weights.weight_packed is packed_param
+    assert weights.weight_scale is scale_param
+    assert weights.weight_packed.data_ptr() == packed_ptr
+    assert weights.weight_scale.data_ptr() == scale_ptr
+    assert weights.weight_packed.shape == weights.checkpoint_packed_shape
+    assert weights.weight_scale.shape == weights.checkpoint_scale_shape
+    assert weights.runtime_layout == 'checkpoint'
+    assert weights._loaded_parts == {(0, 'gate', 'weight_packed')}
+
+
+def test_marlin_update_is_idempotent_and_partial_reload_fails_closed(
+        monkeypatch):
+    gate_up = _make_weights(monkeypatch, 0, 'gate_up', tp_size=_TP)
+    down = _make_weights(monkeypatch, 0, 'down', tp_size=_TP)
+
+    def load_gate_up(skip=None):
+        for shard_id in ('gate', 'up'):
+            for part, value in _projection_parts(shard_id).items():
+                if (shard_id, part) != skip:
+                    _load_part(gate_up, 0, shard_id, part, value)
+
+    def load_down():
+        for part, value in _projection_parts('down').items():
+            _load_part(down, 0, 'down', part, value)
+
+    load_gate_up()
+    load_down()
+
+    class FakeMarlinImpl:
+        runtime_weight_layout = 'marlin'
+
+        def __init__(self):
+            self.processed_shapes = []
+            self.release_count = 0
+
+        def validate_weights_after_loading(self, *args):
+            return None
+
+        def process_weights_after_loading(self, packed, scale):
+            self.processed_shapes.append((tuple(packed.shape),
+                                          tuple(scale.shape)))
+            return (packed.clone().reshape(1, packed.shape[-1], -1),
+                    scale.clone().reshape(1, scale.shape[-1], -1))
+
+        def release_runtime_resources(self):
+            self.release_count += 1
+
+    layer = FusedMoEW4A16.__new__(FusedMoEW4A16)
+    torch.nn.Module.__init__(layer)
+    layer.gate_up = gate_up
+    layer.down = down
+    layer.impl = FakeMarlinImpl()
+
+    layer.update_weights()
+    assert gate_up.runtime_layout == down.runtime_layout == 'marlin'
+    assert len(layer.impl.processed_shapes) == 2
+
+    layer.update_weights()
+    assert len(layer.impl.processed_shapes) == 2
+
+    gate = _projection_parts('gate')
+    _load_part(gate_up, 0, 'gate', 'weight_packed', gate['weight_packed'])
+    with pytest.raises(RuntimeError, match='mixed runtime layouts'):
+        layer.update_weights()
+
+    load_gate_up(skip=('gate', 'weight_packed'))
+    load_down()
+    layer.update_weights()
+    assert gate_up.runtime_layout == down.runtime_layout == 'marlin'
+    assert len(layer.impl.processed_shapes) == 4
+
+    layer._apply(lambda tensor: tensor)
+    assert layer.impl.release_count == 1
+
+
 @pytest.mark.parametrize(
     'weight_type,expected_packed,expected_scale,expected_logical',
     [
@@ -431,6 +537,7 @@ def test_ep_layer_builds_deepep_impl_and_local_weights(
         'top_k': 2,
         'num_experts': 16,
         'hidden_dim': 64,
+        'ffn_dim': 256,
         'ep_size': 8,
         'ep_group': ep_group,
         'renormalize': False,

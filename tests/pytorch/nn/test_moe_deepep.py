@@ -596,6 +596,9 @@ def test_w4a16_ep_builder_initializes_normal_and_low_latency_dispatchers(
             calls['low_latency_dispatcher_kwargs'] = kwargs
 
     ep_group = object()
+    # EP must remain on DeepEP even when the process-level EP1 selector asks
+    # for Marlin explicitly.
+    monkeypatch.setenv('LMDEPLOY_W4A16_MOE_BACKEND', 'marlin')
     monkeypatch.setattr(w4, 'use_deepep', True)
     monkeypatch.setattr(w4, 'get_deepep_state',
                         lambda: FakeDeepEPState())
@@ -609,6 +612,7 @@ def test_w4a16_ep_builder_initializes_normal_and_low_latency_dispatchers(
         top_k=8,
         num_experts=384,
         hidden_dim=7168,
+        ffn_dim=256,
         ep_size=8,
         ep_group=ep_group,
         out_dtype=torch.bfloat16,
@@ -637,6 +641,80 @@ def test_w4a16_ep_builder_initializes_normal_and_low_latency_dispatchers(
         'params_dtype': torch.bfloat16,
         'num_max_dispatch_tokens_per_rank': 256,
     }
+
+
+def test_w4a16_ep1_backend_selector(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    monkeypatch.setattr(w4.marlin_ops,
+                        'is_marlin_moe_w4a16_available', lambda: True)
+    monkeypatch.setenv('LMDEPLOY_W4A16_MOE_BACKEND', 'auto')
+    impl = w4.TritonFusedMoEW4A16Builder.build(
+        top_k=8,
+        num_experts=384,
+        hidden_dim=7168,
+        ffn_dim=256,
+        out_dtype=torch.bfloat16,
+    )
+    assert isinstance(impl, w4.MarlinFusedMoEW4A16Impl)
+    assert impl.runtime_weight_layout == 'marlin'
+
+    def fail_if_probed():
+        raise AssertionError('explicit Triton must not probe optional Marlin')
+
+    monkeypatch.setattr(w4.marlin_ops,
+                        'is_marlin_moe_w4a16_available', fail_if_probed)
+    monkeypatch.setenv('LMDEPLOY_W4A16_MOE_BACKEND', 'triton')
+    impl = w4.TritonFusedMoEW4A16Builder.build(
+        top_k=8,
+        num_experts=384,
+        hidden_dim=7168,
+        ffn_dim=256,
+        out_dtype=torch.bfloat16,
+    )
+    assert isinstance(impl, w4.TritonFusedMoEW4A16Impl)
+
+
+def test_w4a16_forced_marlin_fails_closed_when_unavailable(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    monkeypatch.setattr(w4.marlin_ops,
+                        'is_marlin_moe_w4a16_available', lambda: False)
+    monkeypatch.setenv('LMDEPLOY_W4A16_MOE_BACKEND', 'marlin')
+    with pytest.raises(RuntimeError, match='explicitly requested'):
+        w4.TritonFusedMoEW4A16Builder.build(
+            top_k=8,
+            num_experts=384,
+            hidden_dim=7168,
+            ffn_dim=256,
+            out_dtype=torch.bfloat16,
+        )
+
+
+def test_w4a16_marlin_shape_contract_falls_back_or_fails(monkeypatch):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    monkeypatch.setattr(w4.marlin_ops,
+                        'is_marlin_moe_w4a16_available', lambda: True)
+    monkeypatch.setenv('LMDEPLOY_W4A16_MOE_BACKEND', 'auto')
+    impl = w4.TritonFusedMoEW4A16Builder.build(
+        top_k=2,
+        num_experts=8,
+        hidden_dim=64,
+        ffn_dim=32,
+        out_dtype=torch.bfloat16,
+    )
+    assert isinstance(impl, w4.TritonFusedMoEW4A16Impl)
+
+    monkeypatch.setenv('LMDEPLOY_W4A16_MOE_BACKEND', 'marlin')
+    with pytest.raises(RuntimeError, match='explicitly requested'):
+        w4.TritonFusedMoEW4A16Builder.build(
+            top_k=2,
+            num_experts=8,
+            hidden_dim=64,
+            ffn_dim=32,
+            out_dtype=torch.bfloat16,
+        )
 
 
 def test_w4a16_ep_forward_dispatches_local_routes_and_combines(monkeypatch):
