@@ -62,7 +62,8 @@ PYBIND11_MODULE(_marlin_moe_w4a16, module) {
       &uses_deterministic_route_alignment,
       py::arg("num_routes"),
       py::arg("num_experts"));
-  module.attr("ABI_VERSION") = 3;
+  module.attr("ABI_VERSION") = 4;
+  module.attr("SUPPORTED_BLOCK_SIZES") = py::make_tuple(8, 16, 32, 48, 64);
   module.attr("ROUTE_ALIGN_WORKERS") = 16;
   module.attr("DETERMINISTIC_ROUTE_LIMIT") = 65536;
   module.attr("MAX_DETERMINISTIC_EXPERTS") = 512;

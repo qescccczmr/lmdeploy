@@ -21,11 +21,47 @@ from .activation import silu_and_mul
 from .fused_moe import moe_reduce
 
 _MARLIN_AOT_MODULE = '_marlin_moe_w4a16'
-_MARLIN_AOT_ABI_VERSION = 3
+_MARLIN_AOT_ABI_VERSION = 4
 _MARLIN_AOT_TARGET = 'sm90-bf16-u4b8-g32-marlin-moe'
-_MARLIN_BLOCK_SIZE = 8
+MARLIN_MOE_BLOCK_SIZES = (8, 16, 32, 48, 64)
+_MARLIN_DECODE_BLOCK_SIZE = MARLIN_MOE_BLOCK_SIZES[0]
+_MARLIN_MIN_ADAPTIVE_PREFILL_TOKENS = 4096
 _MARLIN_MAX_THREAD_N = 256
 _MARLIN_AOT_ALIGN_MAX_ROUTES = 16384
+
+
+def select_marlin_moe_block_size(
+    num_tokens: int,
+    topk: int,
+    num_experts: int,
+    is_decoding: bool = False,
+) -> int:
+    """Choose a route tile without changing Marlin's reduction semantics.
+
+    Decode and small/medium prefill keep the graph-safe block-8
+    specialization. Large prefill follows the average routed-token load per
+    expert used by the adapted Marlin implementation. The conservative
+    prefill cutoff keeps ordinary single-request inference on the established
+    numerical path while still optimizing throughput-oriented batches.
+    """
+    if num_tokens < 0 or min(topk, num_experts) <= 0:
+        raise ValueError(
+            'Marlin token count must be non-negative and routing dimensions '
+            'must be positive')
+    if num_tokens == 0:
+        return _MARLIN_DECODE_BLOCK_SIZE
+    if is_decoding:
+        return _MARLIN_DECODE_BLOCK_SIZE
+    if num_tokens < _MARLIN_MIN_ADAPTIVE_PREFILL_TOKENS:
+        return _MARLIN_DECODE_BLOCK_SIZE
+
+    num_routes = num_tokens * topk
+    for block_size in MARLIN_MOE_BLOCK_SIZES:
+        # Equivalent to num_routes / num_experts / block_size < 0.9,
+        # expressed with integers so dispatcher boundaries are exact.
+        if 10 * num_routes < 9 * num_experts * block_size:
+            return block_size
+    return MARLIN_MOE_BLOCK_SIZES[-1]
 
 
 @triton.jit
@@ -262,6 +298,12 @@ def _validate_marlin_aot_module(module: ModuleType) -> ModuleType:
     if target != _MARLIN_AOT_TARGET:
         raise RuntimeError(f'{_MARLIN_AOT_MODULE} TARGET must be '
                            f'{_MARLIN_AOT_TARGET!r}, got {target!r}')
+    supported_block_sizes = tuple(
+        getattr(module, 'SUPPORTED_BLOCK_SIZES', ()))
+    if supported_block_sizes != MARLIN_MOE_BLOCK_SIZES:
+        raise RuntimeError(
+            f'{_MARLIN_AOT_MODULE} SUPPORTED_BLOCK_SIZES must be '
+            f'{MARLIN_MOE_BLOCK_SIZES}, got {supported_block_sizes!r}')
     required_exports = (
         'launch_safe',
         'align_topk_i64_out',
@@ -423,15 +465,14 @@ class MarlinMoEWorkspace:
         hidden_size: int,
         intermediate_size: int,
         device: torch.device | str,
-        block_size: int = _MARLIN_BLOCK_SIZE,
+        block_size: int = _MARLIN_DECODE_BLOCK_SIZE,
     ) -> None:
         if min(max_tokens, topk, num_experts, hidden_size,
                intermediate_size) <= 0:
             raise ValueError('Marlin workspace dimensions must be positive')
-        if block_size != _MARLIN_BLOCK_SIZE:
-            raise ValueError(
-                f'The current Marlin AOT requires block_size=8, got '
-                f'{block_size}')
+        if block_size not in MARLIN_MOE_BLOCK_SIZES:
+            raise ValueError(f'Marlin block_size must be one of '
+                             f'{MARLIN_MOE_BLOCK_SIZES}, got {block_size}')
         device = torch.device(device)
         if device.type != 'cuda':
             raise ValueError('Marlin workspace requires a CUDA device')
@@ -492,9 +533,10 @@ class MarlinMoEWorkspace:
         def _scratch_numel(out_features: int) -> int:
             numel = min(out_features * sorted_capacity,
                         sm_count * 4 * block_size * _MARLIN_MAX_THREAD_N)
-            # The block-8 Marlin specialization launches two reduction
-            # groups and therefore requires twice the ordinary scratch.
-            return numel * 2
+            # Only the block-8 specialization launches two reduction groups.
+            if block_size == _MARLIN_DECODE_BLOCK_SIZE:
+                numel *= 2
+            return numel
 
         scratch_numel = max(_scratch_numel(2 * intermediate_size),
                             _scratch_numel(hidden_size))
@@ -511,7 +553,11 @@ class MarlinMoEWorkspace:
                                 dtype=torch.bfloat16,
                                 device=device)
 
-    def workspace_for_tokens(self, tokens: int) -> 'MarlinMoEWorkspace':
+    def workspace_for_tokens(
+        self,
+        tokens: int,
+        block_size: int | None = None,
+    ) -> 'MarlinMoEWorkspace':
         """Return fixed graph buffers or an eager-only temporary workspace.
 
         The buffers owned by ``self`` may already be referenced by a captured
@@ -519,13 +565,19 @@ class MarlinMoEWorkspace:
         steps use a temporary workspace that is released after the result has
         been reduced; decode keeps the fixed, graph-replay-safe allocation.
         """
-        if tokens <= self.max_tokens:
+        if block_size is None:
+            block_size = self.block_size
+        if block_size not in MARLIN_MOE_BLOCK_SIZES:
+            raise ValueError(f'Marlin block_size must be one of '
+                             f'{MARLIN_MOE_BLOCK_SIZES}, got {block_size}')
+        if tokens <= self.max_tokens and block_size == self.block_size:
             return self
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError(
-                f'Marlin CUDA Graph workspace supports at most '
-                f'{self.max_tokens} tokens, got {tokens}. Increase the '
-                'configured maximum batch size before graph capture.')
+                'Marlin CUDA Graph workspace cannot change capacity or '
+                f'block size: capacity={self.max_tokens}, '
+                f'block_size={self.block_size}, requested_tokens={tokens}, '
+                f'requested_block_size={block_size}.')
         return type(self)(
             max_tokens=tokens,
             topk=self.topk,
@@ -533,7 +585,7 @@ class MarlinMoEWorkspace:
             hidden_size=self.hidden_size,
             intermediate_size=self.intermediate_size,
             device=self.device,
-            block_size=self.block_size,
+            block_size=block_size,
         )
 
     def validate(self, hidden_states: torch.Tensor, topk_ids: torch.Tensor,
@@ -754,6 +806,7 @@ def marlin_moe_w4a16(
     down_packed: torch.Tensor,
     down_scale: torch.Tensor,
     workspace: MarlinMoEWorkspace,
+    block_size: int | None = None,
 ) -> torch.Tensor:
     """Run the accuracy-preserving Marlin W4A16 routed-MoE chain.
 
@@ -768,7 +821,13 @@ def marlin_moe_w4a16(
         raise RuntimeError(
             f'{_MARLIN_AOT_MODULE} is unavailable: {load_error or "not found"}'
         )
-    workspace = workspace.workspace_for_tokens(hidden_states.size(0))
+    if block_size is None:
+        # Keep the low-level API backward compatible. Phase-aware adaptive
+        # dispatch belongs to the production backend, which has StepContext;
+        # direct callers retain the workspace's explicit configuration.
+        block_size = workspace.block_size
+    workspace = workspace.workspace_for_tokens(hidden_states.size(0),
+                                                block_size)
     gate_n, intermediate_size = _validate_marlin_moe_inputs(
         hidden_states,
         topk_ids,
@@ -823,10 +882,12 @@ def marlin_moe_w4a16(
 
 
 __all__ = [
+    'MARLIN_MOE_BLOCK_SIZES',
     'MarlinMoEWorkspace',
     'is_marlin_moe_w4a16_available',
     'marlin_moe_w4a16',
     'permute_w4a16_scale_for_marlin',
     'repack_w4a16_for_marlin',
     'repack_w4a16_weight_for_marlin',
+    'select_marlin_moe_block_size',
 ]

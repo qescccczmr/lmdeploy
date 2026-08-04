@@ -61,8 +61,9 @@ void launch_marlin_moe_bf16_u4b8_g32(
   check_pointer(sorted_token_ids_ptr, "sorted_token_ids_ptr");
   check_pointer(expert_ids_ptr, "expert_ids_ptr");
   check_pointer(num_tokens_post_padded_ptr, "num_tokens_post_padded_ptr");
-  if (moe_block_size != 8) {
-    throw std::invalid_argument("Marlin-MoE AOT requires moe_block_size=8");
+  if (!is_supported_marlin_moe_block_size(moe_block_size)) {
+    throw std::invalid_argument(
+        "Marlin-MoE AOT requires moe_block_size in {8,16,32,48,64}");
   }
   if (size_m <= 0 || size_n <= 0 || size_k <= 0 || top_k <= 0) {
     throw std::invalid_argument(
