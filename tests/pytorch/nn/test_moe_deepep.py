@@ -675,6 +675,142 @@ def test_w4a16_ep1_backend_selector(monkeypatch):
     assert isinstance(impl, w4.TritonFusedMoEW4A16Impl)
 
 
+def _run_w4a16_marlin_block_dispatch(monkeypatch,
+                                     *,
+                                     num_tokens,
+                                     is_decoding,
+                                     prefill_override=None):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    monkeypatch.setattr(w4, 'marlin_moe_prefill_block_size',
+                        ('auto' if prefill_override is None else
+                         str(prefill_override)))
+    monkeypatch.setattr(w4.marlin_ops,
+                        'is_marlin_moe_w4a16_available', lambda: True)
+
+    if is_decoding is None:
+        monkeypatch.setattr(w4, 'get_step_ctx_manager', lambda: None)
+    else:
+
+        class FakeStepContext:
+
+            @staticmethod
+            def global_is_decoding():
+                return is_decoding
+
+        class FakeStepContextManager:
+
+            @staticmethod
+            def current_context():
+                return FakeStepContext()
+
+        monkeypatch.setattr(w4, 'get_step_ctx_manager',
+                            lambda: FakeStepContextManager())
+
+    calls = []
+
+    def fake_marlin(hidden_states, *args, **kwargs):
+        calls.append(kwargs)
+        return hidden_states
+
+    monkeypatch.setattr(w4.marlin_ops, 'marlin_moe_w4a16', fake_marlin)
+    impl = w4.MarlinFusedMoEW4A16Impl(
+        top_k=8,
+        num_experts=384,
+        hidden_dim=7168,
+        intermediate_size=256,
+        renormalize=False,
+        num_bits=4,
+        group_size=32,
+        out_dtype=torch.bfloat16,
+        max_tokens=32,
+    )
+    # The production workspace is CUDA-only. Backend dispatch is independent
+    # of its contents, so use an opaque sentinel and intercept the kernel call.
+    impl.workspace = object()
+    hidden_states = torch.zeros((num_tokens, 1), dtype=torch.bfloat16)
+    topk_ids = torch.zeros((num_tokens, 8), dtype=torch.int64)
+    topk_weights = torch.full((num_tokens, 8),
+                              1 / 8,
+                              dtype=torch.float32)
+    unused_weight = torch.empty(0)
+
+    output = impl.forward(hidden_states, topk_weights, topk_ids,
+                          unused_weight, unused_weight, unused_weight,
+                          unused_weight)
+    assert output is hidden_states
+    assert len(calls) == 1
+    return calls[0]['block_size']
+
+
+def test_w4a16_marlin_decode_forces_block8_over_prefill_override(monkeypatch):
+    block_size = _run_w4a16_marlin_block_dispatch(
+        monkeypatch,
+        num_tokens=28672,
+        is_decoding=True,
+        prefill_override=64,
+    )
+
+    assert block_size == 8
+
+
+def test_w4a16_marlin_prefill_uses_adaptive_block(monkeypatch):
+    block_size = _run_w4a16_marlin_block_dispatch(
+        monkeypatch,
+        num_tokens=28672,
+        is_decoding=False,
+    )
+
+    assert block_size == 64
+
+
+def test_w4a16_marlin_standalone_forward_uses_prefill_dispatch(monkeypatch):
+    block_size = _run_w4a16_marlin_block_dispatch(
+        monkeypatch,
+        num_tokens=28672,
+        is_decoding=None,
+    )
+
+    assert block_size == 64
+
+
+@pytest.mark.parametrize('override', (8, 16, 32, 48, 64))
+def test_w4a16_marlin_prefill_block_override(monkeypatch, override):
+    block_size = _run_w4a16_marlin_block_dispatch(
+        monkeypatch,
+        num_tokens=1,
+        is_decoding=False,
+        prefill_override=override,
+    )
+
+    assert block_size == override
+
+
+@pytest.mark.parametrize('override', ('', 'invalid', '7', '24', '128'))
+def test_w4a16_marlin_rejects_invalid_prefill_block_override(
+        monkeypatch, override):
+    from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
+
+    monkeypatch.setattr(w4.marlin_ops,
+                        'is_marlin_moe_w4a16_available', lambda: True)
+    monkeypatch.setattr(w4, 'marlin_moe_prefill_block_size', override)
+
+    with pytest.raises(
+            ValueError,
+            match='LMDEPLOY_MARLIN_MOE_PREFILL_BLOCK_SIZE must be auto'):
+        w4.MarlinFusedMoEW4A16Impl(
+            top_k=8,
+            num_experts=384,
+            hidden_dim=7168,
+            intermediate_size=256,
+            renormalize=False,
+            num_bits=4,
+            group_size=32,
+            out_dtype=torch.bfloat16,
+            max_tokens=32,
+        )
+
+
 def test_w4a16_forced_marlin_fails_closed_when_unavailable(monkeypatch):
     from lmdeploy.pytorch.backends.cuda.moe import compressed_tensors as w4
 
