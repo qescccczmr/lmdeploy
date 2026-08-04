@@ -252,10 +252,9 @@ void launch_align_topk_i64_out(
       num_routes > std::numeric_limits<int32_t>::max()) {
     throw std::invalid_argument("num_routes must be in [1, INT32_MAX]");
   }
-  if (!is_supported_marlin_moe_block_size(block_size)) {
+  if (block_size != 8) {
     throw std::invalid_argument(
-        "Marlin-MoE route alignment requires block_size in "
-        "{8,16,32,48,64}");
+        "Marlin-MoE route alignment requires block_size=8");
   }
 
   const std::int64_t required_sorted =
@@ -264,8 +263,7 @@ void launch_align_topk_i64_out(
     throw std::invalid_argument(
         "aligned route capacity must fit in an int32 Marlin route index");
   }
-  const std::int64_t required_experts =
-      (required_sorted + block_size - 1) / block_size;
+  const std::int64_t required_experts = required_sorted / block_size;
   if (sorted_token_ids_capacity < required_sorted) {
     throw std::invalid_argument(
         "sorted_token_ids_capacity is smaller than max_aligned_routes");

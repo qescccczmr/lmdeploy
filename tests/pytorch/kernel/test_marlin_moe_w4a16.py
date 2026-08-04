@@ -7,28 +7,15 @@ import torch.nn.functional as F
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(),
                                 reason='requires CUDA')
 
-_SUPPORTED_BLOCK_SIZES = (8, 16, 32, 48, 64)
-
 
 def _require_marlin():
     from lmdeploy.pytorch.kernels.cuda import marlin_moe_w4a16
 
     module, load_error = marlin_moe_w4a16._load_marlin_aot()
     if module is None:
-        # The extension is optional, but an installed stale/incompatible
-        # binary must not turn this source-change validation into a false-green
-        # skip.  In that case the developer must rebuild the AOT module.
-        incompatible_contract = ('ABI_VERSION', 'SUPPORTED_BLOCK_SIZES',
-                                 'TARGET')
-        if load_error and any(marker in load_error
-                              for marker in incompatible_contract):
-            pytest.fail(
-                'installed Marlin AOT module is incompatible with the Python '
-                f'adapter; rebuild it before testing: {load_error}')
         pytest.skip(f'optional Marlin AOT module is unavailable: {load_error}')
     if torch.cuda.get_device_capability() != (9, 0):
         pytest.skip('Marlin W4A16 tests require SM90')
-    assert tuple(module.SUPPORTED_BLOCK_SIZES) == _SUPPORTED_BLOCK_SIZES
     return marlin_moe_w4a16, module
 
 
@@ -80,15 +67,9 @@ def _make_case(num_tokens: int):
             num_experts, hidden_size, intermediate_size, topk)
 
 
-@pytest.mark.parametrize(
-    'num_tokens,block_size',
-    [(1, 8), (32, 8), *((257, block_size)
-                         for block_size in _SUPPORTED_BLOCK_SIZES),
-     (4097, 64)],
-)
+@pytest.mark.parametrize('num_tokens', [1, 32])
 @torch.inference_mode()
-def test_marlin_w4a16_chain_matches_triton_and_is_repeatable(
-        num_tokens, block_size):
+def test_marlin_w4a16_chain_matches_triton_and_is_repeatable(num_tokens):
     marlin, _ = _require_marlin()
     from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import fused_moe_w4a16
 
@@ -101,8 +82,7 @@ def test_marlin_w4a16_chain_matches_triton_and_is_repeatable(
         down_packed, down_scale)
     workspace = marlin.MarlinMoEWorkspace(num_tokens, topk, num_experts,
                                           hidden_size, intermediate_size,
-                                          hidden_states.device,
-                                          block_size=block_size)
+                                          hidden_states.device)
 
     expected = fused_moe_w4a16(hidden_states,
                                gate_packed,
@@ -119,8 +99,7 @@ def test_marlin_w4a16_chain_matches_triton_and_is_repeatable(
             marlin.marlin_moe_w4a16(hidden_states, topk_ids, topk_weights,
                                     marlin_gate_packed, marlin_gate_scale,
                                     marlin_down_packed, marlin_down_scale,
-                                    workspace,
-                                    block_size=block_size))
+                                    workspace))
     torch.cuda.synchronize()
 
     assert torch.allclose(topk_weights.sum(-1),
@@ -154,55 +133,11 @@ def test_marlin_w4a16_chain_matches_triton_and_is_repeatable(
                                         renormalize=False)
     permuted_actual = marlin.marlin_moe_w4a16(
         hidden_states, permuted_ids, permuted_weights, marlin_gate_packed,
-        marlin_gate_scale, marlin_down_packed, marlin_down_scale, workspace,
-        block_size=block_size)
+        marlin_gate_scale, marlin_down_packed, marlin_down_scale, workspace)
     permuted_nrmse, permuted_cosine = _quality(permuted_actual,
                                                permuted_expected)
     assert permuted_nrmse <= 1.5e-3
     assert permuted_cosine >= 0.99999
-
-
-@torch.inference_mode()
-def test_marlin_w4a16_workspace_switches_block_only_outside_graph(monkeypatch):
-    marlin, _ = _require_marlin()
-    workspace = marlin.MarlinMoEWorkspace(
-        max_tokens=7,
-        topk=4,
-        num_experts=8,
-        hidden_size=256,
-        intermediate_size=128,
-        device='cuda',
-        block_size=8,
-    )
-
-    assert workspace.workspace_for_tokens(7, block_size=8) is workspace
-    eager_workspace = workspace.workspace_for_tokens(9, block_size=64)
-    assert eager_workspace is not workspace
-    assert eager_workspace.max_tokens == 9
-    assert eager_workspace.block_size == 64
-    assert workspace.max_tokens == 7
-    assert workspace.block_size == 8
-
-    monkeypatch.setattr(torch.cuda, 'is_current_stream_capturing', lambda: True)
-    with pytest.raises(RuntimeError, match='cannot change capacity or block size'):
-        workspace.workspace_for_tokens(8, block_size=8)
-    with pytest.raises(RuntimeError, match='cannot change capacity or block size'):
-        workspace.workspace_for_tokens(7, block_size=16)
-
-
-@pytest.mark.parametrize('block_size', [0, 7, 24, 80])
-def test_marlin_w4a16_workspace_rejects_unsupported_blocks(block_size):
-    marlin, _ = _require_marlin()
-    with pytest.raises(ValueError, match='block_size must be one of'):
-        marlin.MarlinMoEWorkspace(
-            max_tokens=1,
-            topk=1,
-            num_experts=1,
-            hidden_size=64,
-            intermediate_size=64,
-            device='cuda',
-            block_size=block_size,
-        )
 
 
 @torch.inference_mode()

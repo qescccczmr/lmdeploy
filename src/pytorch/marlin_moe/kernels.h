@@ -3,11 +3,6 @@
 
 #include <cstdint>
 
-inline constexpr bool is_supported_marlin_moe_block_size(int block_size) {
-  return block_size == 8 || block_size == 16 || block_size == 32 ||
-         block_size == 48 || block_size == 64;
-}
-
 void launch_marlin_moe_bf16_u4b8_g32(
     std::uintptr_t a_ptr,
     std::uintptr_t output_bf16_ptr,

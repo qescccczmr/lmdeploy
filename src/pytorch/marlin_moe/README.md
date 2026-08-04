@@ -34,9 +34,8 @@ adapter owns and validates tensor dtype, shape, stride, capacity, device, and
 lifetime. Router IDs are trusted to satisfy the already-validated MoE expert
 domain contract.
 
-- `launch_safe(...)` accepts route block sizes 8, 16, 32, 48, and 64. It fixes
-  Marlin to the non-atomic FP32 split-K reduction and never multiplies router
-  weights. No atomic accumulation path is exported.
+- `launch_safe(...)` fixes Marlin to the non-atomic FP32 split-K reduction and
+  never multiplies router weights. No atomic accumulation path is exported.
 - `align_topk_i64_out(...)` converts contiguous int64 top-k IDs into Marlin's
   int32 sorted-route, expert-block, and padded-count layout. It explicitly
   receives caller-owned route scratch and cumsum buffers. Up to 65,536 routes
@@ -50,18 +49,10 @@ domain contract.
   synchronize the host, and does not assume the default stream, so it is CUDA
   Graph replay safe.
 - `max_aligned_routes(...)` returns the required conservative sorted-route
-  capacity. Expert-ID capacity is
-  `(capacity + block_size - 1) // block_size`.
+  capacity. Expert-ID capacity is `capacity // block_size`.
 - `deterministic_route_scratch_numel(num_experts)` returns the required int32
   route-scratch capacity (`16 * num_experts`). The int32 cumsum capacity is
   `num_experts + 1`.
-
-The Python runtime keeps decode and prefill batches below 4,096 tokens on
-block 8. Larger prefill batches select from the supported block sizes using
-their average routed-token load per expert. Set
-`LMDEPLOY_MARLIN_MOE_PREFILL_BLOCK_SIZE` to `8`, `16`, `32`, `48`, or `64` to
-override prefill selection, or leave its default value `auto`; decode always
-uses block 8 and ignores the prefill override.
 - `uses_deterministic_route_alignment(num_routes, num_experts)` lets the
   backend fail closed to its stable Triton path when routes exceed 65,536 or
   experts exceed 512. The same limits are exported as module attributes.
