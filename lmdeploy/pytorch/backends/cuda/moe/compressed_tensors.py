@@ -13,7 +13,6 @@ from lmdeploy.pytorch.backends.cuda.token_dispatcher import (
 )
 from lmdeploy.pytorch.backends.deepep_state import get_deepep_state
 from lmdeploy.pytorch.backends.moe import FusedMoEW4A16Builder, FusedMoEW4A16Impl
-from lmdeploy.pytorch.envs import marlin_moe_prefill_block_size
 from lmdeploy.pytorch.kernels.cuda import marlin_moe_w4a16 as marlin_ops
 from lmdeploy.pytorch.kernels.cuda.compressed_tensors_w4a16 import (
     fused_moe_w4a16,
@@ -27,7 +26,6 @@ from .ep_utils import gather_outputs_by_attn_tp, split_inputs_by_attn_tp
 
 logger = get_logger('lmdeploy')
 _LOGGED_W4A16_BACKENDS = set()
-_LOGGED_MARLIN_BLOCK_CONFIGS = set()
 
 
 def _log_w4a16_backend_once(selection: str) -> None:
@@ -35,16 +33,6 @@ def _log_w4a16_backend_once(selection: str) -> None:
         return
     _LOGGED_W4A16_BACKENDS.add(selection)
     logger.info('Compressed-tensors W4A16 MoE backend: %s', selection)
-
-
-def _log_marlin_block_config_once(block_size: int, phase: str,
-                                  source: str) -> None:
-    key = (block_size, phase, source)
-    if key in _LOGGED_MARLIN_BLOCK_CONFIGS:
-        return
-    _LOGGED_MARLIN_BLOCK_CONFIGS.add(key)
-    logger.info('Marlin W4A16 MoE %s route block_size=%d (%s)', phase,
-                block_size, source)
 
 
 class TritonFusedMoEW4A16Impl(FusedMoEW4A16Impl):
@@ -145,20 +133,6 @@ class MarlinFusedMoEW4A16Impl(FusedMoEW4A16Impl):
         self.group_size = group_size
         self.out_dtype = out_dtype
         self.max_tokens = max(1, max_tokens)
-        prefill_block_size = marlin_moe_prefill_block_size
-        if prefill_block_size == 'auto':
-            self.prefill_block_size = None
-        else:
-            try:
-                self.prefill_block_size = int(prefill_block_size)
-            except ValueError as error:
-                raise ValueError(
-                    'LMDEPLOY_MARLIN_MOE_PREFILL_BLOCK_SIZE must be auto or '
-                    'one of 8, 16, 32, 48, 64') from error
-            if self.prefill_block_size not in marlin_ops.MARLIN_MOE_BLOCK_SIZES:
-                raise ValueError(
-                    'LMDEPLOY_MARLIN_MOE_PREFILL_BLOCK_SIZE must be auto or '
-                    'one of 8, 16, 32, 48, 64')
         self.workspace = None
 
     def _make_workspace(self, device: torch.device):
@@ -261,33 +235,6 @@ class MarlinFusedMoEW4A16Impl(FusedMoEW4A16Impl):
         if self.workspace is None:
             self.workspace = self._make_workspace(hidden_states.device)
         topk_weights = _renormalize(topk_weights, self.renormalize)
-        ctx_mgr = get_step_ctx_manager()
-        step_ctx = (ctx_mgr.current_context()
-                    if ctx_mgr is not None else None)
-        is_decoding = (step_ctx is not None
-                       and step_ctx.global_is_decoding())
-        if is_decoding:
-            block_size = marlin_ops.select_marlin_moe_block_size(
-                num_tokens=hidden_states.size(0),
-                topk=self.top_k,
-                num_experts=self.num_experts,
-                is_decoding=True,
-            )
-            source = 'decode fixed'
-            phase = 'decode'
-        elif self.prefill_block_size is not None:
-            block_size = self.prefill_block_size
-            source = 'environment override'
-            phase = 'prefill'
-        else:
-            block_size = marlin_ops.select_marlin_moe_block_size(
-                num_tokens=hidden_states.size(0),
-                topk=self.top_k,
-                num_experts=self.num_experts,
-            )
-            source = 'adaptive'
-            phase = 'prefill'
-        _log_marlin_block_config_once(block_size, phase, source)
         return marlin_ops.marlin_moe_w4a16(
             hidden_states,
             topk_ids,
@@ -297,7 +244,6 @@ class MarlinFusedMoEW4A16Impl(FusedMoEW4A16Impl):
             down_packed,
             down_scale,
             self.workspace,
-            block_size=block_size,
         )
 
 
