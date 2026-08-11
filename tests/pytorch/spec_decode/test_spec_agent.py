@@ -197,6 +197,82 @@ def test_prepare_inputs_from_main_dp_non_last_first_chunk_shifts_last_token_indi
     assert agent.proposer.model.update_inputs_calls == 1
 
 
+def test_shift_packed_prefill_inputs_keeps_request_boundaries():
+    input_ids = torch.tensor([[10, 11, 12, 20, 21, 22]])
+    seq_length = torch.tensor([3, 3])
+    next_token_ids = torch.tensor([99, 88])
+
+    shifted = SpecModelAgent._shift_packed_prefill_inputs(
+        input_ids, seq_length, next_token_ids)
+
+    torch.testing.assert_close(
+        shifted,
+        torch.tensor([[11, 12, 99, 21, 22, 88]]),
+    )
+
+
+def test_shift_packed_verify_inputs_uses_selected_rows():
+    input_ids = torch.tensor([[10, 11, 12, 13, 20, 21, 22, 23]])
+    seq_length = torch.tensor([4, 4])
+    next_token_ids = torch.tensor([99, 88])
+    selected_rows = torch.tensor([0, 6])
+
+    shifted = SpecModelAgent._shift_packed_prefill_inputs(
+        input_ids,
+        seq_length,
+        next_token_ids,
+        replacement_indices=selected_rows,
+    )
+
+    torch.testing.assert_close(
+        shifted,
+        torch.tensor([[99, 12, 13, 13, 21, 22, 88, 23]]),
+    )
+
+
+def test_prepare_inputs_from_main_shifts_packed_ids_and_embeddings():
+    agent = object.__new__(SpecModelAgent)
+    agent._prev_chunk_last = {}
+    agent.proposer = _DummyProposer()
+    agent.proposer.embed_input_ids = lambda ids: torch.stack(
+        [ids.float(), ids.float() + 0.5], dim=-1)
+    model_inputs = ModelInputs(
+        input_ids=torch.tensor([[10, 11, 12, 20, 21, 22]]),
+        seq_length=torch.tensor([3, 3]),
+        history_lengths=torch.zeros(2, dtype=torch.long),
+        num_ignored_history=torch.zeros(2, dtype=torch.long),
+        block_offsets=torch.zeros((2, 1), dtype=torch.long),
+        is_decoding=False,
+        max_q_seqlen=3,
+        max_kv_seqlen=3,
+        sum_kv_seqlen=6,
+        is_chunk=False,
+    )
+    target_hidden_states = torch.arange(12, dtype=torch.float32).view(1, 6, 2)
+    target_inputs_embeds = target_hidden_states + 100
+    extra_inputs = ARSpecExtraInputs(
+        next_token_ids=torch.tensor([99, 88]),
+        last_token_indices=torch.tensor([2, 5]),
+        target_hidden_states=target_hidden_states,
+        target_inputs_embeds=target_inputs_embeds,
+    )
+
+    draft_inputs, _ = agent._prepare_inputs_from_main(
+        model_inputs, extra_inputs)
+
+    torch.testing.assert_close(
+        draft_inputs.input_ids,
+        torch.tensor([[11, 12, 99, 21, 22, 88]]),
+    )
+    expected_embeddings = torch.tensor(
+        [[[102., 103.], [104., 105.], [99., 99.5],
+          [108., 109.], [110., 111.], [88., 88.5]]])
+    torch.testing.assert_close(
+        draft_inputs.target_inputs_embeds,
+        expected_embeddings,
+    )
+
+
 def test_prepare_inputs_from_main_last_chunk_keeps_long_context_kv_metadata():
     """Last chunks keep aggregate KV metadata aligned after input rewriting."""
     from lmdeploy.pytorch.model_inputs import DPMeta, ModelInputs
