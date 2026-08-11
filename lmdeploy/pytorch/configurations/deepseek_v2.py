@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+from lmdeploy.pytorch import envs as _envs
 from lmdeploy.pytorch.config import ModelConfig
 
 from .builder import AutoModelConfigBuilder
@@ -45,7 +46,16 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
         if is_draft_model or spec_method is not None:
             model_paradigm = 'ar_spec'
 
-        hf_config.use_flash_mla = flash_mla_available()
+        requested_mla_backend = _envs.mla_attention_backend
+        flash_mla_is_available = flash_mla_available()
+        hf_config.use_flash_mla = (
+            flash_mla_is_available
+            and requested_mla_backend != 'fa3'
+        )
+        if requested_mla_backend == 'flashmla' and not hf_config.use_flash_mla:
+            raise RuntimeError(
+                'LMDEPLOY_MLA_ATTENTION_BACKEND=flashmla was requested, but '
+                'a compatible top-level flash_mla package is unavailable.')
         exact_fa3_mla_layout = (
             head_dim == 576
             and hf_config.kv_lora_rank == 512
@@ -57,6 +67,10 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
             and exact_fa3_mla_layout
             and fa3_mla_available()
         )
+        if requested_mla_backend == 'fa3' and not hf_config.use_fa3_mla:
+            raise RuntimeError(
+                'LMDEPLOY_MLA_ATTENTION_BACKEND=fa3 was requested, but the '
+                'model layout, execution mode, GPU, or FA3 build is incompatible.')
         num_layers = hf_config.num_hidden_layers
 
         # draft model cfg

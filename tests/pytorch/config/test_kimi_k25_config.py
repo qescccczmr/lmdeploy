@@ -48,9 +48,11 @@ def _make_kimi_k25_config(outer_quant_config=None):
     return outer_config, text_config
 
 
-def _patch_mla_availability(monkeypatch, *, flash=False, fa3=False):
+def _patch_mla_availability(monkeypatch, *, flash=False, fa3=False, backend='auto'):
+    from lmdeploy.pytorch import envs
     import lmdeploy.pytorch.configurations.deepseek_v2 as deepseek_v2_config
 
+    monkeypatch.setattr(envs, 'mla_attention_backend', backend)
     monkeypatch.setattr(deepseek_v2_config, 'flash_mla_available', lambda: flash)
     monkeypatch.setattr(deepseek_v2_config, 'fa3_mla_available', lambda: fa3)
 
@@ -188,6 +190,31 @@ def test_kimi_k25_config_builder_keeps_flash_mla_priority(monkeypatch):
     assert config.use_flash_mla is True
     assert config.use_fa3_mla is False
     assert text_config.use_fa3_mla is False
+
+
+@pytest.mark.parametrize(
+    ('backend', 'expected_flash', 'expected_fa3'),
+    [('flashmla', True, False), ('fa3', False, True)],
+)
+def test_kimi_k25_config_builder_honors_explicit_mla_backend(
+        monkeypatch, backend, expected_flash, expected_fa3):
+    _patch_mla_availability(monkeypatch, flash=True, fa3=True, backend=backend)
+    outer_config, _ = _make_kimi_k25_config()
+
+    config = AutoModelConfigBuilder.build(outer_config, tp=8)
+
+    assert config.use_flash_mla is expected_flash
+    assert config.use_fa3_mla is expected_fa3
+
+
+@pytest.mark.parametrize('backend', ['flashmla', 'fa3'])
+def test_kimi_k25_config_builder_rejects_unavailable_forced_mla_backend(
+        monkeypatch, backend):
+    _patch_mla_availability(monkeypatch, backend=backend)
+    outer_config, _ = _make_kimi_k25_config()
+
+    with pytest.raises(RuntimeError, match=f'{backend} was requested'):
+        AutoModelConfigBuilder.build(outer_config, tp=8)
 
 
 def test_kimi_k25_config_builder_disables_fa3_mla_for_deepseek_mtp(monkeypatch):

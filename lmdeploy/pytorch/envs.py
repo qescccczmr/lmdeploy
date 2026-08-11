@@ -185,6 +185,9 @@ with set_envs():
     # model format
     scale_fmt = os.getenv('LMDEPLOY_SCALE_FMT', None)
     fp8_moe_only = env_to_bool('LMDEPLOY_FP8_MOE_ONLY', False)
+    mla_attention_backend = env_to_choice(
+        'LMDEPLOY_MLA_ATTENTION_BACKEND', 'auto',
+        {'auto', 'fa3', 'flashmla'})
 
     # repetition check
     repetition_window_size = env_to_int('LMDEPLOY_REPETITION_WINDOW_SIZE', 1024)
