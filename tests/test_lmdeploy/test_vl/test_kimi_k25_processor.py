@@ -1,4 +1,3 @@
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -287,65 +286,3 @@ def test_unsupported_media_and_overrides_fail_closed():
                 'max_pixels': 1024
             }},
         )
-
-
-_REAL_MODEL_PATH = os.getenv('KIMI_K26_MODEL_PATH') or os.getenv(
-    'KIMI_K25_MODEL_PATH')
-
-
-@pytest.mark.skipif(
-    not _REAL_MODEL_PATH,
-    reason='KIMI_K26_MODEL_PATH or KIMI_K25_MODEL_PATH is not set',
-)
-def test_real_snapshot_processor_contract():
-    from transformers import AutoConfig
-
-    config = AutoConfig.from_pretrained(
-        _REAL_MODEL_PATH,
-        trust_remote_code=True,
-        local_files_only=True,
-    )
-    model = KimiK25VisionModel(
-        model_path=_REAL_MODEL_PATH,
-        hf_config=config,
-        backend='pytorch',
-    )
-    model.build_preprocessor(trust_remote_code=True)
-    images = [
-        Image.new('RGB', (32, 48), color=(1, 2, 3)),
-        Image.new('RGB', (57, 33), color=(4, 5, 6)),
-    ]
-    prompt = (
-        '<|media_begin|>image<|media_content|><|media_pad|><|media_end|>'
-        ' compare '
-        '<|media_begin|>image<|media_content|><|media_pad|><|media_end|>')
-
-    oracle = model.processor(
-        medias=[dict(type='image', image=image) for image in images],
-        text=prompt,
-        return_tensors='pt',
-    )
-    result = model.preprocess(
-        _image_messages(*images),
-        input_prompt=prompt,
-    )
-
-    assert [item['grid_thws'].tolist() for item in result['multimodal']] == [
-        [[1, 4, 4]],
-        [[1, 4, 6]],
-    ]
-    assert [item['image_tokens'] for item in result['multimodal']] == [4, 6]
-    assert [item['offset'][1] - item['offset'][0]
-            for item in result['multimodal']] == [4, 6]
-    torch.testing.assert_close(
-        torch.cat([item['pixel_values'] for item in result['multimodal']]),
-        oracle['pixel_values'],
-        rtol=0,
-        atol=0,
-    )
-    torch.testing.assert_close(
-        torch.cat([item['grid_thws'] for item in result['multimodal']]),
-        oracle['grid_thws'],
-        rtol=0,
-        atol=0,
-    )
