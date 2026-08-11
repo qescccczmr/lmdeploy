@@ -249,12 +249,11 @@ class ExecutorBase:
             self.cache_config.kernel_block_size = 128
             return
         # TODO: support kernel with both large head dim and large block size.
-        if self.model_config.k_head_dim >= 512 and self.cache_config.block_size > 32:
-            self.cache_config.block_size = 32
+        if self.model_config.k_head_dim >= 512 and self.cache_config.kernel_block_size > 32:
             self.cache_config.kernel_block_size = 32
             logger.warning(
-                f'Update `block_size={self.cache_config.block_size}` for large `head_dim={self.model_config.k_head_dim}`.'  # noqa
-            )
+                f'Update `kernel_block_size={self.cache_config.kernel_block_size}` '
+                f'for large `head_dim={self.model_config.k_head_dim}`.')
 
     def _get_state_cache_mem(self):
         """Get state cache mem usage."""
