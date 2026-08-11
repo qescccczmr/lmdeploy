@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from lmdeploy.pytorch.model_inputs import DPMeta, ModelInputs
@@ -275,28 +276,52 @@ def test_spec_model_agent_method_when_enabled():
     assert agent.method == specdecode_config.method
 
 
-def test_qwen35_mtp_reuses_main_dist_context(monkeypatch):
-    """Qwen3.5 MTP mirrors the target topology, so it should share groups."""
+@pytest.mark.parametrize(
+    ('method', 'architecture'),
+    [
+        ('qwen3_5_mtp', None),
+        ('eagle3', 'Eagle3DeepseekV2ForCausalLM'),
+    ],
+)
+def test_spec_method_reuses_main_dist_context(
+        monkeypatch, method, architecture):
+    """Draft models with the target topology should share process groups."""
     from lmdeploy.pytorch.config import DistConfig, SpecDecodeConfig
     from lmdeploy.pytorch.distributed import DistContext
     from lmdeploy.pytorch.spec_decode import base as base_mod
 
     dist_config = DistConfig(dp=2, ep=2)
     dist_ctx = DistContext(rank=1, dp_rank=1, dist_config=dist_config, ep_gpu_group=object())
-    specdecode_config = SpecDecodeConfig(model='draft-model',
-                                         method='qwen3_5_mtp',
-                                         dist_config=DistConfig(dp=2, ep=2),
-                                         num_speculative_tokens=3)
+    model_config = None
+    if architecture is not None:
+        model_config = SimpleNamespace(
+            hf_config=SimpleNamespace(architectures=[architecture]))
+    specdecode_config = SpecDecodeConfig(
+        model='draft-model',
+        method=method,
+        model_config=model_config,
+        dist_config=DistConfig(dp=2, ep=2),
+        num_speculative_tokens=3,
+    )
 
     def fail_build(*args, **kwargs):
-        raise AssertionError('qwen3_5_mtp should not build a separate draft DistContext')
+        raise AssertionError(
+            f'{method} should not build a separate draft DistContext')
 
     monkeypatch.setattr(base_mod.DistContext, 'build', staticmethod(fail_build))
 
     assert base_mod._build_draft_dist_ctx(dist_ctx, specdecode_config) is dist_ctx
 
 
-def test_non_qwen35_mtp_builds_draft_dist_context(monkeypatch):
+@pytest.mark.parametrize(
+    ('method', 'architecture'),
+    [
+        ('mtp', None),
+        ('eagle3', 'Eagle3LlamaForCausalLM'),
+    ],
+)
+def test_spec_method_builds_separate_draft_dist_context(
+        monkeypatch, method, architecture):
     """Other speculative methods keep their separate draft distribution
     path."""
     from lmdeploy.pytorch.config import DistConfig, SpecDecodeConfig
@@ -306,10 +331,17 @@ def test_non_qwen35_mtp_builds_draft_dist_context(monkeypatch):
     main_dist_config = DistConfig(dp=2, ep=2)
     draft_dist_config = DistConfig()
     dist_ctx = DistContext(rank=1, dp_rank=1, dist_config=main_dist_config)
-    specdecode_config = SpecDecodeConfig(model='draft-model',
-                                         method='mtp',
-                                         dist_config=draft_dist_config,
-                                         num_speculative_tokens=3)
+    model_config = None
+    if architecture is not None:
+        model_config = SimpleNamespace(
+            hf_config=SimpleNamespace(architectures=[architecture]))
+    specdecode_config = SpecDecodeConfig(
+        model='draft-model',
+        method=method,
+        model_config=model_config,
+        dist_config=draft_dist_config,
+        num_speculative_tokens=3,
+    )
     draft_dist_ctx = DistContext(rank=1, dist_config=draft_dist_config)
     build_calls = []
 

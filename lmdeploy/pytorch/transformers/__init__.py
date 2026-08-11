@@ -11,6 +11,9 @@ def register_config(model_type: str):
     if model_type == 'deepseek_v32':
         from lmdeploy.pytorch.transformers.configuration_deepseek_v32 import DeepseekV32Config
         AutoConfig.register(DeepseekV32Config.model_type, DeepseekV32Config)
+    elif model_type == 'kimi_k2':
+        from lmdeploy.pytorch.transformers.configuration_kimi_k2 import KimiK2Config
+        AutoConfig.register(KimiK2Config.model_type, KimiK2Config)
     else:
         logger.debug(f'Can not register config for model_type: {model_type}')
 

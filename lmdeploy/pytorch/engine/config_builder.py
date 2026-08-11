@@ -12,7 +12,11 @@ from lmdeploy.pytorch.config import (
     SpecDecodeConfig,
     normalize_cudagraph_capture_batch_sizes,
 )
+from lmdeploy.pytorch.transformers import config_from_pretrained
 from lmdeploy.utils import get_logger, get_max_batch_size, get_model
+
+
+_EAGLE3_DEEPSEEK_ARCH = 'Eagle3DeepseekV2ForCausalLM'
 
 
 class ConfigBuilder:
@@ -115,9 +119,11 @@ class ConfigBuilder:
                                 trust_remote_code: bool = False,
                                 ):
         """Build spec decode config."""
-        def _build_draft_dist_ctx(dist_config):
+        def _build_draft_dist_ctx(dist_config, draft_arch):
             # TODO support tp > 1, ep > 1 for other methods
             if speculative_config.method == 'qwen3_5_mtp':
+                draft_dist_config = dist_config
+            elif speculative_config.method == 'eagle3' and draft_arch == _EAGLE3_DEEPSEEK_ARCH:
                 draft_dist_config = dist_config
             else:
                 draft_dist_config = DistConfig()
@@ -125,10 +131,19 @@ class ConfigBuilder:
 
         specdecode_config = None
         if speculative_config is not None:
-            draft_dist_config = _build_draft_dist_ctx(dist_config)
             draft_model = speculative_config.model
             if draft_model and not os.path.exists(speculative_config.model):
                 draft_model = get_model(draft_model, engine_config.download_dir, engine_config.revision)
+            draft_arch = None
+            if speculative_config.method == 'eagle3' and draft_model is not None:
+                draft_hf_config = config_from_pretrained(
+                    draft_model, trust_remote_code=trust_remote_code)
+                draft_architectures = getattr(draft_hf_config, 'architectures', None) or []
+                if draft_architectures:
+                    draft_arch = draft_architectures[0]
+            draft_dist_config = _build_draft_dist_ctx(dist_config, draft_arch)
+            draft_model_format = (
+                None if draft_arch == _EAGLE3_DEEPSEEK_ARCH else engine_config.model_format)
 
             specdecode_config = SpecDecodeConfig.from_config(
                 method=speculative_config.method,
@@ -138,7 +153,7 @@ class ConfigBuilder:
                 target_cache_cfg=cache_config,
                 dtype=engine_config.dtype,
                 trust_remote_code=trust_remote_code,
-                model_format=engine_config.model_format,
+                model_format=draft_model_format,
                 hf_overrides=engine_config.hf_overrides,
                 dist_config=draft_dist_config,
             )

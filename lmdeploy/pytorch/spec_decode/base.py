@@ -13,12 +13,28 @@ from ..strategies.base.model_inputs import ModelInputsStrategy
 from .reject_sampler import RejectionSampler
 
 
+_EAGLE3_DEEPSEEK_ARCH = 'Eagle3DeepseekV2ForCausalLM'
+
+
+def _reuse_target_dist_ctx(specdecode_config: SpecDecodeConfig) -> bool:
+    """Return whether the draft model uses the target parallel topology."""
+    if specdecode_config.method == 'qwen3_5_mtp':
+        return True
+    if specdecode_config.method != 'eagle3':
+        return False
+
+    model_config = specdecode_config.model_config
+    hf_config = getattr(model_config, 'hf_config', None)
+    architectures = getattr(hf_config, 'architectures', None) or []
+    return bool(architectures and architectures[0] == _EAGLE3_DEEPSEEK_ARCH)
+
+
 def _build_draft_dist_ctx(dist_ctx: DistContext, specdecode_config: SpecDecodeConfig) -> DistContext:
     """Build draft dist context."""
     if specdecode_config is None:
         return None
 
-    if specdecode_config.method == 'qwen3_5_mtp':
+    if _reuse_target_dist_ctx(specdecode_config):
         return dist_ctx
 
     draft_dist_config = specdecode_config.dist_config

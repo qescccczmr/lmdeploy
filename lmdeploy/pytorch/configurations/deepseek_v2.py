@@ -6,6 +6,9 @@ from .builder import AutoModelConfigBuilder
 from .utils import fa3_mla_available, flash_mla_available
 
 
+_EAGLE3_DEEPSEEK_ARCH = 'Eagle3DeepseekV2ForCausalLM'
+
+
 def _enable_kimi_fused_qkv_a_proj(hf_config) -> bool:
     """Return whether Kimi can merge its replicated MLA A projections."""
     dtype = str(getattr(hf_config, 'dtype', '')).removeprefix('torch.')
@@ -41,8 +44,11 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
         # update num_kv_heads for tp mode
         num_key_value_heads = cls.update_num_kv_heads(hf_config, tp, num_key_value_heads)
         model_paradigm = 'ar'
-        if spec_method is not None:
-            assert spec_method == 'deepseek_mtp'
+        supported_spec_methods = {'deepseek_mtp', 'eagle3'}
+        if spec_method is not None and spec_method not in supported_spec_methods:
+            raise ValueError(f'Unsupported speculative method for DeepSeek V2: {spec_method}')
+        if spec_method == 'eagle3' and hf_config.model_type != 'kimi_k2':
+            raise ValueError('DeepSeek EAGLE3 is currently supported only for Kimi-K2 models.')
         if is_draft_model or spec_method is not None:
             model_paradigm = 'ar_spec'
 
@@ -72,14 +78,32 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
                 'LMDEPLOY_MLA_ATTENTION_BACKEND=fa3 was requested, but the '
                 'model layout, execution mode, GPU, or FA3 build is incompatible.')
         num_layers = hf_config.num_hidden_layers
+        vocab_size = hf_config.vocab_size
+        architectures = getattr(hf_config, 'architectures', None) or []
 
         # draft model cfg
         if is_draft_model:
-            num_layers = hf_config.num_nextn_predict_layers
-            hf_config.architectures[0] = 'DeepseekMTPModel'
-            # remove for correct mapping when building the patched model
-            if hasattr(hf_config, 'auto_map'):
-                del hf_config.auto_map
+            if spec_method == 'deepseek_mtp':
+                num_layers = hf_config.num_nextn_predict_layers
+                hf_config.architectures[0] = 'DeepseekMTPModel'
+                # remove for correct mapping when building the patched model
+                if hasattr(hf_config, 'auto_map'):
+                    del hf_config.auto_map
+            elif spec_method == 'eagle3':
+                if not architectures or architectures[0] != _EAGLE3_DEEPSEEK_ARCH:
+                    raise ValueError(
+                        'Kimi-K2 EAGLE3 draft config must use architecture '
+                        f'{_EAGLE3_DEEPSEEK_ARCH}.')
+                if hf_config.num_hidden_layers != 1:
+                    raise ValueError('Kimi-K2 EAGLE3 draft model must contain exactly one layer.')
+                num_layers = 1
+                vocab_size = getattr(hf_config, 'draft_vocab_size', None) or hf_config.vocab_size
+            else:
+                raise ValueError('A speculative method is required when building a DeepSeek draft model.')
+        elif spec_method == 'eagle3':
+            if num_layers < 5:
+                raise ValueError('Kimi-K2 EAGLE3 target model must contain at least five layers.')
+            hf_config.aux_hidden_state_layers = (2, num_layers // 2, num_layers - 3)
 
         bos_token_id = getattr(hf_config, 'bos_token_id', None)
         config = ModelConfig(
@@ -92,7 +116,7 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
             head_dim=head_dim,
             k_head_dim=k_head_dim,
             v_head_dim=v_head_dim,
-            vocab_size=hf_config.vocab_size,
+            vocab_size=vocab_size,
             use_flash_mla=hf_config.use_flash_mla,
             use_fa3_mla=hf_config.use_fa3_mla,
             model_paradigm=model_paradigm,

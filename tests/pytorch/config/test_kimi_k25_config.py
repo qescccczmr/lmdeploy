@@ -9,6 +9,9 @@ from lmdeploy.pytorch.configurations.deepseek_v2 import DeepseekV2ModelConfigBui
 from lmdeploy.pytorch.configurations.kimi_k25 import KimiK25ModelConfigBuilder
 
 
+_EAGLE3_DEEPSEEK_ARCH = 'Eagle3DeepseekV2ForCausalLM'
+
+
 def _make_kimi_k25_config(outer_quant_config=None):
     text_config = SimpleNamespace(
         architectures=['DeepseekV3ForCausalLM'],
@@ -46,6 +49,17 @@ def _make_kimi_k25_config(outer_quant_config=None):
     if outer_quant_config is not None:
         outer_config.quantization_config = outer_quant_config
     return outer_config, text_config
+
+
+def _make_kimi_eagle3_text_config(*, architecture=_EAGLE3_DEEPSEEK_ARCH, num_layers=1):
+    _, text_config = _make_kimi_k25_config()
+    text_config.architectures = [architecture]
+    text_config.num_hidden_layers = num_layers
+    text_config.draft_vocab_size = 163839
+    text_config.auto_map = {
+        'AutoModelForCausalLM': 'modeling_kimi.KimiForCausalLM'
+    }
+    return text_config
 
 
 def _patch_mla_availability(monkeypatch, *, flash=False, fa3=False, backend='auto'):
@@ -226,6 +240,92 @@ def test_kimi_k25_config_builder_disables_fa3_mla_for_deepseek_mtp(monkeypatch):
     assert config.model_paradigm == 'ar_spec'
     assert config.use_fa3_mla is False
     assert text_config.use_fa3_mla is False
+
+
+def test_kimi_eagle3_target_uses_flashmla_and_selects_aux_layers(monkeypatch):
+    _patch_mla_availability(monkeypatch, flash=True, fa3=True)
+    _, text_config = _make_kimi_k25_config()
+
+    config = DeepseekV2ModelConfigBuilder.build(
+        text_config, tp=8, spec_method='eagle3')
+
+    assert config.model_paradigm == 'ar_spec'
+    assert config.num_layers == 61
+    assert config.use_flash_mla is True
+    assert config.use_fa3_mla is False
+    assert text_config.aux_hidden_state_layers == (2, 30, 58)
+    assert text_config.architectures == ['DeepseekV3ForCausalLM']
+
+
+def test_kimi_eagle3_does_not_enable_fa3_fallback(monkeypatch):
+    _patch_mla_availability(monkeypatch, flash=False, fa3=True)
+    _, text_config = _make_kimi_k25_config()
+
+    config = DeepseekV2ModelConfigBuilder.build(
+        text_config, tp=8, spec_method='eagle3')
+
+    assert config.use_flash_mla is False
+    assert config.use_fa3_mla is False
+
+
+def test_kimi_eagle3_draft_preserves_architecture(monkeypatch):
+    _patch_mla_availability(monkeypatch, flash=True, fa3=True)
+    text_config = _make_kimi_eagle3_text_config()
+
+    config = DeepseekV2ModelConfigBuilder.build(
+        text_config,
+        tp=8,
+        is_draft_model=True,
+        spec_method='eagle3',
+    )
+
+    assert text_config.architectures == [_EAGLE3_DEEPSEEK_ARCH]
+    assert text_config.auto_map
+    assert config.model_paradigm == 'ar_spec'
+    assert config.num_layers == 1
+    assert config.vocab_size == text_config.draft_vocab_size
+    assert config.use_flash_mla is True
+    assert config.use_fa3_mla is False
+
+
+def test_deepseek_mtp_draft_keeps_existing_rewrite(monkeypatch):
+    _patch_mla_availability(monkeypatch)
+    text_config = _make_kimi_eagle3_text_config(
+        architecture='DeepseekV3ForCausalLM', num_layers=61)
+    text_config.num_nextn_predict_layers = 2
+
+    config = DeepseekV2ModelConfigBuilder.build(
+        text_config,
+        tp=8,
+        is_draft_model=True,
+        spec_method='deepseek_mtp',
+    )
+
+    assert text_config.architectures == ['DeepseekMTPModel']
+    assert not hasattr(text_config, 'auto_map')
+    assert config.num_layers == 2
+    assert config.model_paradigm == 'ar_spec'
+
+
+def test_kimi_k2_standalone_config_roundtrip(tmp_path):
+    from lmdeploy.pytorch.transformers import config_from_pretrained
+    from lmdeploy.pytorch.transformers.configuration_kimi_k2 import KimiK2Config
+
+    expected = KimiK2Config(
+        vocab_size=1024,
+        hidden_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=8,
+    )
+    expected.save_pretrained(tmp_path)
+
+    actual = config_from_pretrained(str(tmp_path))
+
+    assert isinstance(actual, KimiK2Config)
+    assert actual.vocab_size == 1024
+    assert actual.hidden_size == 128
+    assert actual.num_hidden_layers == 1
+    assert actual.num_attention_heads == 8
 
 
 def test_kimi_k25_config_builder_rejects_non_exact_fa3_mla_layout(monkeypatch):
