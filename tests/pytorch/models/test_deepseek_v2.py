@@ -22,15 +22,31 @@ class _FakeExperts(nn.Module):
                  ep,
                  tp_reduce_dtype=None,
                  tp_group=None,
-                 output_value=1):
+                 output_value=1,
+                 supports_fused_shared_addend=False):
         super().__init__()
         self.ep = ep
         self.tp_reduce_dtype = tp_reduce_dtype
         self.tp_group = tp_group
         self.output_value = output_value
+        self.all_reduce = False
+        self.supports_fused_shared_addend = supports_fused_shared_addend
+        self.forward_calls = 0
+        self.fused_calls = 0
 
     def forward(self, hidden_states, topk_weights, topk_ids):
+        self.forward_calls += 1
         return torch.full_like(hidden_states, self.output_value)
+
+    def forward_with_shared_addend(self, hidden_states, topk_weights,
+                                   topk_ids, shared_addend):
+        self.fused_calls += 1
+        routed = torch.full_like(
+            hidden_states,
+            self.output_value,
+            dtype=torch.float32,
+        )
+        return routed + shared_addend.float()
 
 
 class _FakeSharedExperts(nn.Module):
@@ -45,7 +61,8 @@ def _make_moe(*,
               tp_reduce_dtype=None,
               tp_group=None,
               shared_tp_group=None,
-              output_value=1):
+              output_value=1,
+              supports_fused_shared_addend=False):
     moe = deepseek_v2.DeepseekV2MoE.__new__(deepseek_v2.DeepseekV2MoE)
     nn.Module.__init__(moe)
     moe.gate = _FakeGate()
@@ -54,10 +71,12 @@ def _make_moe(*,
         tp_reduce_dtype=tp_reduce_dtype,
         tp_group=tp_group,
         output_value=output_value,
+        supports_fused_shared_addend=supports_fused_shared_addend,
     )
     moe.shared_experts = _FakeSharedExperts() if shared else None
     moe._shared_expert_tp_group = shared_tp_group
     moe._all_reduce = True
+    moe._enable_moe_reduce_shared_fusion = False
     moe._defer_tp_reduce_output_cast = False
     return moe
 
@@ -210,6 +229,80 @@ def test_tp_can_defer_promoted_reduce_output_cast(monkeypatch):
     )
 
 
+def test_tp_fused_shared_addend_preserves_logical_bf16_contract(monkeypatch):
+    tp_group = object()
+
+    def fake_all_reduce(tensor, group=None):
+        assert tensor.dtype == torch.float32
+        assert group is tp_group
+        torch.testing.assert_close(
+            tensor,
+            torch.full_like(tensor, 1.5),
+            rtol=0,
+            atol=0,
+        )
+        tensor.mul_(8)
+
+    monkeypatch.setattr(deepseek_v2.dist, 'all_reduce', fake_all_reduce)
+    moe = _make_moe(
+        ep=1,
+        tp_reduce_dtype=torch.float32,
+        tp_group=tp_group,
+        supports_fused_shared_addend=True,
+    )
+    moe._enable_moe_reduce_shared_fusion = True
+    moe._defer_tp_reduce_output_cast = True
+
+    result = moe(torch.zeros((1, 2, 4), dtype=torch.bfloat16))
+
+    assert moe.experts.forward_calls == 0
+    assert moe.experts.fused_calls == 1
+    assert result.dtype == torch.float32
+    torch.testing.assert_close(
+        result,
+        torch.full_like(result, 12),
+        rtol=0,
+        atol=0,
+    )
+
+
+@pytest.mark.parametrize(
+    ('override', 'value'),
+    [
+        ('_enable_moe_reduce_shared_fusion', False),
+        ('_defer_tp_reduce_output_cast', False),
+        ('shared_experts', None),
+        ('_all_reduce', False),
+        ('experts.ep', 2),
+        ('experts.tp_reduce_dtype', torch.bfloat16),
+        ('experts.all_reduce', True),
+        ('experts.supports_fused_shared_addend', False),
+    ],
+)
+def test_reduce_shared_fusion_falls_back_when_contract_is_incomplete(
+        monkeypatch, override, value):
+    monkeypatch.setattr(deepseek_v2.dist, 'all_reduce', lambda *args, **kwargs: None)
+    moe = _make_moe(
+        ep=1,
+        tp_reduce_dtype=torch.float32,
+        supports_fused_shared_addend=True,
+    )
+    moe._enable_moe_reduce_shared_fusion = True
+    moe._defer_tp_reduce_output_cast = True
+    target = moe
+    parts = override.split('.')
+    for part in parts[:-1]:
+        target = getattr(target, part)
+    setattr(target, parts[-1], value)
+    if moe.experts.ep > 1:
+        moe._shared_expert_tp_group = object()
+
+    moe(torch.zeros((1, 2, 4), dtype=torch.bfloat16))
+
+    assert moe.experts.forward_calls == 1
+    assert moe.experts.fused_calls == 0
+
+
 def test_tp_defer_requires_bf16_output(monkeypatch):
     tp_group = object()
 
@@ -256,6 +349,7 @@ def _kimi_moe_config(**overrides):
         hidden_size=7168,
         n_routed_experts=384,
         num_experts_per_tok=8,
+        n_shared_experts=1,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -270,6 +364,20 @@ def test_kimi_moe_post_norm_fusion_gate_is_model_specific(monkeypatch):
     assert not deepseek_v2._use_kimi_moe_post_norm_fusion(
         _kimi_moe_config(hidden_size=4096), torch.bfloat16)
     assert not deepseek_v2._use_kimi_moe_post_norm_fusion(
+        _kimi_moe_config(), torch.float16)
+
+
+def test_kimi_moe_reduce_shared_fusion_gate_is_narrow(monkeypatch):
+    monkeypatch.setattr(
+        deepseek_v2._envs, 'enable_kimi_moe_post_norm_fusion', True)
+    monkeypatch.setattr(
+        deepseek_v2._envs, 'enable_kimi_moe_reduce_shared_fusion', True)
+
+    assert deepseek_v2._use_kimi_moe_reduce_shared_fusion(
+        _kimi_moe_config(), torch.bfloat16)
+    assert not deepseek_v2._use_kimi_moe_reduce_shared_fusion(
+        _kimi_moe_config(n_shared_experts=None), torch.bfloat16)
+    assert not deepseek_v2._use_kimi_moe_reduce_shared_fusion(
         _kimi_moe_config(), torch.float16)
 
 

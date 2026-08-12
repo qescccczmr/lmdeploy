@@ -493,6 +493,49 @@ class FusedMoEW4A16(FusedMoEBase):
         self.down.replace_runtime_layout_(down_packed, down_scale,
                                           target_layout)
 
+    @property
+    def supports_fused_shared_addend(self) -> bool:
+        """Whether routed reduction can consume a local shared addend."""
+        return (
+            getattr(self.impl, 'supports_fused_shared_addend', False)
+            and self.ep == 1
+            and self.tp_mode == TPMode.DEFAULT
+            and not self.all_reduce
+        )
+
+    def forward_with_shared_addend(
+        self,
+        hidden_states: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_idx: torch.LongTensor,
+        shared_addend: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the narrow synchronous fused-finalize path."""
+        if not self.supports_fused_shared_addend:
+            raise RuntimeError(
+                'fused shared addend requires Marlin, EP=1, default TP, '
+                'and no inner all-reduce')
+        state = {
+            'hidden_states': hidden_states,
+            'topk_idx': topk_idx,
+            'topk_weights': topk_weights,
+            'moe_type': MoeType.Default,
+        }
+        state = self.dispatch(state)
+        if state['hidden_states'].shape != shared_addend.shape:
+            raise ValueError(
+                'fused shared addend must match dispatched hidden states')
+        return self.impl.forward(
+            state['hidden_states'],
+            state['topk_weights'],
+            state['topk_idx'],
+            self.gate_up.weight_packed,
+            self.gate_up.weight_scale,
+            self.down.weight_packed,
+            self.down.weight_scale,
+            shared_addend=shared_addend,
+        )
+
     def dispatch(self, state: dict):
         """Gather eager default-TP inputs."""
         moe_type = state['moe_type']
