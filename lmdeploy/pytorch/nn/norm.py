@@ -23,6 +23,7 @@ class RMSNorm(nn.Module):
         tp: bool = False,
         align: int = 1,
         prefix: str = '',
+        cast_input_to_residual_dtype: bool = False,
     ):
         super().__init__()
         backend = get_backend()
@@ -52,6 +53,7 @@ class RMSNorm(nn.Module):
         if tp:
             self.weight.weight_loader = self.weight_loader
         self.align = align
+        self.cast_input_to_residual_dtype = cast_input_to_residual_dtype
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         """Weight loader."""
@@ -71,6 +73,18 @@ class RMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor, residual: torch.Tensor = None):
         """forward."""
+        use_mixed_boundary = (
+            self.cast_input_to_residual_dtype and residual is not None
+            and x.dtype == torch.float32
+            and residual.dtype == torch.bfloat16
+            and self.weight.dtype == torch.bfloat16)
+        if use_mixed_boundary:
+            forward_mixed_dtype = getattr(self.impl,
+                                          'forward_mixed_dtype', None)
+            if forward_mixed_dtype is not None:
+                return forward_mixed_dtype(x, self.weight, residual)
+            # Preserve the original materialized cast on other backends.
+            x = x.to(residual.dtype)
         return self.impl.forward(x, self.weight, residual)
 
 
