@@ -138,6 +138,16 @@ def test_fa3_mla_ar_spec_uses_original_fa3_metadata(monkeypatch):
     assert step_context.attn_metadata.scheduler_metadata is not None
 
 
+def test_attention_metadata_preserves_request_query_bound():
+    step_context = _make_decode_step_context()
+    step_context.model_config.use_fa3_mla = False
+    step_context.max_q_seqlen = 7
+
+    CudaOpsBackend.update_step_context(step_context)
+
+    assert step_context.attn_metadata.max_q_seqlen == 7
+
+
 def test_fa3_mla_multi_token_normal_ar_does_not_prepare_scheduler(monkeypatch):
     called = []
 

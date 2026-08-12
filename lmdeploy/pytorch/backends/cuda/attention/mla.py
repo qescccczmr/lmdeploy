@@ -288,7 +288,6 @@ class FlashMLAImpl(TritonAttentionImpl):
         Returns:
             Attention output tensor.
         """
-        max_q_seqlen = query.numel() // (query.size(-1) * query.size(-2))
         kv_flatten_size = attn_metadata.kv_flatten_size
         causal = self.causal
 
@@ -297,6 +296,14 @@ class FlashMLAImpl(TritonAttentionImpl):
         q_nope = query[:, :, :self.v_head_size]
         k_rope = flatten_k.view(kv_flatten_size, self.num_kv_heads, -1)[:, :, self.v_head_size:]
         c_kv = flatten_k.view(kv_flatten_size, self.num_kv_heads, -1)[:, :, :self.v_head_size]
+        max_q_seqlen = attn_metadata.max_q_seqlen
+        if max_q_seqlen is None:
+            # Custom metadata producers may not carry the scalar. Production
+            # metadata supplies it without synchronizing every model layer.
+            if attn_metadata.q_seqlens is not None:
+                max_q_seqlen = int(attn_metadata.q_seqlens.max().item())
+            else:
+                max_q_seqlen = query.size(0)
         from lmdeploy.pytorch.third_party.flash_attn_interface import flash_attn_varlen_func
         attn_output = flash_attn_varlen_func(
             q=q_rope,
@@ -306,7 +313,7 @@ class FlashMLAImpl(TritonAttentionImpl):
             cu_seqlens_q=attn_metadata.cu_seqlens_q,
             cu_seqlens_k=attn_metadata.cu_seqlens_k,
             max_seqlen_q=max_q_seqlen,
-            max_seqlen_k=kv_flatten_size,
+            max_seqlen_k=attn_metadata.max_kv_seqlen,
             softmax_scale=self.scale,
             causal=causal,
             window_size=(-1, -1) if self.sliding_window is None else self.sliding_window,

@@ -52,6 +52,38 @@ def _enable_fa3(alibi: bool, learnable_sink: bool, block_sparse_size: int, head_
 
 
 @functools.lru_cache
+def _enable_fa3_flash_mla_prefill(
+    use_flash_mla: bool,
+    head_size: int,
+    v_head_size: int,
+    num_kv_heads: int,
+    alibi: bool,
+    learnable_sink: bool,
+    block_sparse_size: int,
+    sliding_window: tuple,
+    logit_softcapping: float,
+    causal: bool,
+) -> bool:
+    """Enable FA3 prefill for the supported absorbed-MLA layout."""
+    enable = (
+        use_flash_mla
+        and head_size == 576
+        and v_head_size == 512
+        and num_kv_heads == 1
+        and not alibi
+        and not learnable_sink
+        and block_sparse_size == 1
+        and sliding_window == (-1, -1)
+        and logit_softcapping <= 0.0
+        and causal
+    )
+    if enable:
+        from lmdeploy.pytorch.configurations.utils import fa3_mla_available
+        enable = fa3_mla_available()
+    return enable
+
+
+@functools.lru_cache
 def _fa3_absorbed_mla_available() -> bool:
     """Check the Hopper-only FA3 different-value-dimension kernel."""
     if not use_fa3_warning():
@@ -174,6 +206,18 @@ class TritonAttentionBuilder(AttentionBuilder[TritonAttentionMetadata]):
             **kwargs,
         )
         enable_fa3 = _enable_fa3(alibi, learnable_sink, block_sparse_size, head_size)
+        enable_fa3_flash_mla_prefill = _enable_fa3_flash_mla_prefill(
+            use_flash_mla,
+            head_size,
+            v_head_size,
+            num_kv_heads,
+            alibi,
+            learnable_sink,
+            block_sparse_size,
+            sliding_window,
+            logit_softcapping,
+            causal,
+        )
         enable_fa3_absorbed_mla = _enable_fa3_absorbed_mla(
             use_fa3_mla,
             head_size,
@@ -191,7 +235,10 @@ class TritonAttentionBuilder(AttentionBuilder[TritonAttentionMetadata]):
         if use_flash_mla is True:
             logger.debug('Build FlashMLAImpl Attention')
             from .mla import FlashMLAImpl
-            return FlashMLAImpl(use_fa3=use_fa3, **common_args)
+            return FlashMLAImpl(
+                use_fa3=enable_fa3_flash_mla_prefill,
+                **common_args,
+            )
         elif enable_fa3_absorbed_mla:
             logger.debug('Build FA3AbsorbedMLAImpl Attention')
             from .fa3 import FA3AbsorbedMLAImpl

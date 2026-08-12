@@ -217,6 +217,12 @@ class CudaOpsBackend(DefaultOpsBackend):
         use_flash_mla = step_context.model_config.use_flash_mla
         batch_size = q_seqlens.size(0)
         decode_query_len = step_context.input_ids.size(1) // batch_size
+        max_q_seqlen = getattr(step_context, 'max_q_seqlen', None)
+        if max_q_seqlen is None:
+            # Older/custom StepContext producers may not carry the scalar.
+            # Decode is uniform; total prefill tokens are a safe upper bound.
+            max_q_seqlen = (decode_query_len if step_context.is_decoding
+                            else step_context.input_ids.size(1))
         from .attention.fa3 import FA3_MLA_MAX_BATCH_SIZE
         use_fa3_mla = (
             step_context.model_config.use_fa3_mla
@@ -251,6 +257,7 @@ class CudaOpsBackend(DefaultOpsBackend):
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_kv_seqlen=step_context.max_kv_seqlen,
+            max_q_seqlen=max_q_seqlen,
         )
         if step_context.is_decoding:
             if use_flash_mla:
