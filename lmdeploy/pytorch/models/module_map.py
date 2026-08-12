@@ -302,5 +302,11 @@ MODULE_MAP.update({'EagleLlamaForCausalLM': f'{LMDEPLOY_PYTORCH_MODEL_PATH}.llam
 # eagle3 llama
 MODULE_MAP.update({'Eagle3LlamaForCausalLM': f'{LMDEPLOY_PYTORCH_MODEL_PATH}.llama_eagle3.Eagle3LlamaForCausalLM'})
 
+# eagle3 kimi-k2/deepseek MLA
+MODULE_MAP.update({
+    'Eagle3DeepseekV2ForCausalLM':
+    f'{LMDEPLOY_PYTORCH_MODEL_PATH}.kimi_k25_eagle3.Eagle3DeepseekV2ForCausalLM'
+})
+
 # deepseek mtp
 MODULE_MAP.update({'DeepseekMTPModel': f'{LMDEPLOY_PYTORCH_MODEL_PATH}.deepseek_mtp.DeepseekMTPModel'})

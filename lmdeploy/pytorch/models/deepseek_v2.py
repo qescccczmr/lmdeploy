@@ -1061,13 +1061,16 @@ class DeepseekV2DecoderLayer(nn.Module):
         residual: torch.Tensor | None = None,
         attn_metadata: Any = None,
         all_routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.FloatTensor, torch.FloatTensor]:
+        capture_input_residual: bool = False,
+    ) -> tuple[Any, ...]:
 
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        input_residual = (residual.clone()
+                          if capture_input_residual else None)
 
         # Self Attention
         hidden_states = self.self_attn(
@@ -1083,6 +1086,8 @@ class DeepseekV2DecoderLayer(nn.Module):
             hidden_states, all_routed_experts=all_routed_experts)
 
         outputs = (hidden_states, residual)
+        if input_residual is not None:
+            outputs += (input_residual, )
         return outputs
 
     def forward_yield(
@@ -1200,6 +1205,8 @@ class DeepseekV2Model(nn.Module):
             )
             for layer_idx in range(config.num_hidden_layers)
         ])
+        self.aux_hidden_state_layers: tuple[int, ...] = tuple(
+            getattr(config, 'aux_hidden_state_layers', ()) or ())
 
         # build norm
         self.norm = RMSNorm(
@@ -1240,18 +1247,34 @@ class DeepseekV2Model(nn.Module):
         cos, sin = self.rotary_emb(hidden_states, position_ids)
         cos, sin = cos[0], sin[0]
         rotary_pos_emb = (cos, sin)
+        aux_hidden_state_layers = self.aux_hidden_state_layers
+        aux_hidden_states_by_layer: dict[int, torch.Tensor] = {}
         for idx, decoder_layer in enumerate(self.layers):
             past_key_value = past_key_values[idx]
-            hidden_states, residual = decoder_layer(
+            capture_input_residual = idx in aux_hidden_state_layers
+            layer_output = decoder_layer(
                 hidden_states,
                 rotary_pos_emb=rotary_pos_emb,
                 past_key_value=past_key_value,
                 residual=residual,
                 attn_metadata=attn_metadata,
                 all_routed_experts=all_routed_experts,
+                capture_input_residual=capture_input_residual,
             )
+            hidden_states, residual = layer_output[:2]
+            if capture_input_residual:
+                aux_hidden_states_by_layer[idx] = layer_output[2]
 
         hidden_states, _ = self.norm(hidden_states, residual)
+        if aux_hidden_state_layers:
+            aux_hidden_states = torch.cat([
+                aux_hidden_states_by_layer[idx]
+                for idx in aux_hidden_state_layers
+            ], dim=-1)
+            return dict(
+                hidden_states=hidden_states,
+                aux_hidden_states=aux_hidden_states,
+            )
         return hidden_states
 
     def forward_microbatch(
@@ -1381,6 +1404,7 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
         inputs_embeds: torch.Tensor = None,
         **kwargs,
     ):
+        aux_hidden_states = None
         all_routed_experts = None
         if self.enable_return_routed_experts:
             num_tokens = (inputs_embeds.size(1)
@@ -1395,6 +1419,10 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 raise RuntimeError(
                     'DeepseekV2 routed-expert output is not supported with microbatch execution'
                 )
+            if self.model.aux_hidden_state_layers:
+                raise RuntimeError(
+                    'DeepseekV2 auxiliary hidden-state capture is not supported with microbatch execution'
+                )
             hidden_states = self.model.forward_microbatch(
                 input_ids=input_ids,
                 position_ids=position_ids,
@@ -1403,7 +1431,7 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 inputs_embeds=inputs_embeds,
             )
         else:
-            hidden_states = self.model.forward(
+            model_output = self.model.forward(
                 input_ids=input_ids,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
@@ -1411,12 +1439,19 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 inputs_embeds=inputs_embeds,
                 all_routed_experts=all_routed_experts,
             )
-        if all_routed_experts is None:
+            if isinstance(model_output, dict):
+                hidden_states = model_output['hidden_states']
+                aux_hidden_states = model_output.get('aux_hidden_states')
+            else:
+                hidden_states = model_output
+        if all_routed_experts is None and aux_hidden_states is None:
             return hidden_states
-        return dict(
-            hidden_states=hidden_states,
-            all_routed_experts=all_routed_experts,
-        )
+        output = {'hidden_states': hidden_states}
+        if aux_hidden_states is not None:
+            output['aux_hidden_states'] = aux_hidden_states
+        if all_routed_experts is not None:
+            output['all_routed_experts'] = all_routed_experts
+        return output
 
     def get_logits(self, hidden_states: torch.Tensor):
         """Compute logits of the model output."""
@@ -1425,6 +1460,23 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
     def get_input_embeddings(self):
         """Get input embeddings."""
         return self.model.get_input_embeddings()
+
+    def get_outputs_cudagraph(self,
+                              output_buffers: dict[str, torch.Tensor],
+                              input_ids: torch.Tensor,
+                              **kwargs):
+        """Preserve auxiliary and routed-expert outputs on graph replay."""
+        num_tokens = input_ids.size(-1)
+        outputs = {
+            'hidden_states': output_buffers['hidden_states'][:, :num_tokens]
+        }
+        if output_buffers.get('aux_hidden_states') is not None:
+            outputs['aux_hidden_states'] = output_buffers[
+                'aux_hidden_states'][:, :num_tokens]
+        if output_buffers.get('all_routed_experts') is not None:
+            outputs['all_routed_experts'] = output_buffers[
+                'all_routed_experts'][:num_tokens, ...].clone()
+        return outputs
 
     def prepare_inputs_for_generation(
         self,

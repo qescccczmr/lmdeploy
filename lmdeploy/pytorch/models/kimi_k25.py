@@ -309,6 +309,14 @@ class KimiK25ForConditionalGeneration(nn.Module, DeployModelMixin, CudaGraphMixi
         """Return the delegated language-model embeddings."""
         return self.language_model.get_input_embeddings()
 
+    def get_outputs_cudagraph(self,
+                              output_buffers: dict[str, torch.Tensor],
+                              input_ids: torch.Tensor,
+                              **kwargs):
+        """Preserve language-model EAGLE auxiliary outputs on graph replay."""
+        return self.language_model.get_outputs_cudagraph(
+            output_buffers, input_ids=input_ids, **kwargs)
+
     def prepare_inputs_for_generation(
         self,
         past_key_values: list[list[torch.Tensor]],
