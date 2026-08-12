@@ -1085,45 +1085,6 @@ class DeepseekV2DecoderLayer(nn.Module):
         outputs = (hidden_states, residual)
         return outputs
 
-    def forward_hidden_boundary_probe(
-        self,
-        hidden_states: torch.Tensor,
-        rotary_pos_emb: tuple[torch.FloatTensor, torch.FloatTensor],
-        past_key_value: list[torch.FloatTensor] | None,
-        residual: torch.Tensor | None,
-        hidden_boundary_probe_positions: torch.Tensor,
-        attn_metadata: Any = None,
-        all_routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.FloatTensor, torch.FloatTensor,
-               torch.FloatTensor | None]:
-        """Run one layer and expose the actual fused input residual.
-
-        This separate diagnostic path keeps the production ``forward`` free of
-        probe branches and tensor copies.
-        """
-        previous_layer_raw = None
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual)
-            previous_layer_raw = residual.reshape(
-                -1, residual.shape[-1]).index_select(
-                    0, hidden_boundary_probe_positions)
-
-        hidden_states = self.self_attn(
-            hidden_states=hidden_states,
-            rotary_pos_emb=rotary_pos_emb,
-            past_key_value=past_key_value,
-            attn_metadata=attn_metadata,
-        )
-        hidden_states, residual = self.post_attention_layernorm(
-            hidden_states, residual)
-        hidden_states = self.mlp(
-            hidden_states, all_routed_experts=all_routed_experts)
-        return hidden_states, residual, previous_layer_raw
-
     def forward_yield(
         self,
         hidden_states: torch.Tensor,
@@ -1269,7 +1230,6 @@ class DeepseekV2Model(nn.Module):
         attn_metadata: Any = None,
         inputs_embeds: torch.FloatTensor | None = None,
         all_routed_experts: torch.Tensor | None = None,
-        hidden_boundary_probe_positions: torch.Tensor | None = None,
     ):
         """forward."""
         if inputs_embeds is None:
@@ -1280,56 +1240,19 @@ class DeepseekV2Model(nn.Module):
         cos, sin = self.rotary_emb(hidden_states, position_ids)
         cos, sin = cos[0], sin[0]
         rotary_pos_emb = (cos, sin)
-        if hidden_boundary_probe_positions is None:
-            for idx, decoder_layer in enumerate(self.layers):
-                past_key_value = past_key_values[idx]
-                hidden_states, residual = decoder_layer(
-                    hidden_states,
-                    rotary_pos_emb=rotary_pos_emb,
-                    past_key_value=past_key_value,
-                    residual=residual,
-                    attn_metadata=attn_metadata,
-                    all_routed_experts=all_routed_experts,
-                )
-            hidden_states, _ = self.norm(hidden_states, residual)
-            return hidden_states
-
-        hidden_boundary_probe = {
-            'boundary_00':
-            hidden_states.reshape(
-                -1, hidden_states.shape[-1]).index_select(
-                    0, hidden_boundary_probe_positions)
-        }
         for idx, decoder_layer in enumerate(self.layers):
             past_key_value = past_key_values[idx]
-            layer_output = decoder_layer.forward_hidden_boundary_probe(
+            hidden_states, residual = decoder_layer(
                 hidden_states,
                 rotary_pos_emb=rotary_pos_emb,
                 past_key_value=past_key_value,
                 residual=residual,
                 attn_metadata=attn_metadata,
                 all_routed_experts=all_routed_experts,
-                hidden_boundary_probe_positions=
-                hidden_boundary_probe_positions,
             )
-            hidden_states, residual = layer_output[:2]
-            if idx > 0:
-                previous_layer_raw = layer_output[2]
-                if previous_layer_raw is None:
-                    raise RuntimeError(
-                        f'layer {idx} did not expose its input residual')
-                hidden_boundary_probe[f'boundary_{idx:02d}'] = (
-                    previous_layer_raw)
 
-        hidden_states, final_raw = self.norm(hidden_states, residual)
-        final_boundary = len(self.layers)
-        hidden_boundary_probe[f'boundary_{final_boundary:02d}'] = (
-            final_raw.reshape(-1, final_raw.shape[-1]).index_select(
-                0, hidden_boundary_probe_positions))
-        hidden_boundary_probe['final_norm'] = hidden_states.reshape(
-            -1, hidden_states.shape[-1]).index_select(
-                0, hidden_boundary_probe_positions)
-        return hidden_states, hidden_boundary_probe
+        hidden_states, _ = self.norm(hidden_states, residual)
+        return hidden_states
 
     def forward_microbatch(
         self,
@@ -1448,67 +1371,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
         self._load_buffers = dict()
         self.enable_return_routed_experts = (
             get_build_model_context().enable_return_routed_experts)
-        self.hidden_boundary_probe_configured = bool(
-            getattr(config, 'hidden_boundary_probe', False))
-        self.collect_hidden_boundary_probe = (
-            self.hidden_boundary_probe_configured
-            and get_build_model_context().collect_hidden_boundary_probe)
-
-    def _prepare_hidden_boundary_probe_positions(
-        self,
-        positions: list[int] | None,
-        input_ids: torch.Tensor,
-        inputs_embeds: torch.Tensor | None,
-    ) -> torch.Tensor | None:
-        """Validate the diagnostic contract and build a device index tensor."""
-        if positions is None:
-            return None
-        if not self.hidden_boundary_probe_configured:
-            raise RuntimeError(
-                'hidden-boundary probe was requested without the opt-in model config'
-            )
-        context = get_step_ctx_manager().current_context()
-        if context.is_dummy:
-            raise RuntimeError(
-                'hidden-boundary probe does not support dummy forwards')
-        if context.is_decoding:
-            raise RuntimeError(
-                'hidden-boundary probe only supports prompt prefill')
-        if context.is_chunk:
-            raise RuntimeError(
-                'hidden-boundary probe does not support chunked prefill')
-        if context.enable_microbatch:
-            raise RuntimeError(
-                'hidden-boundary probe does not support microbatch execution')
-        if context.q_seqlens.numel() != 1:
-            raise RuntimeError(
-                'hidden-boundary probe requires batch size one')
-        if not torch.equal(context.q_seqlens, context.kv_seqlens):
-            raise RuntimeError(
-                'hidden-boundary probe does not support KV history')
-        if not isinstance(positions, list) or not positions:
-            raise RuntimeError(
-                'hidden-boundary probe positions must be a non-empty list')
-        if any(
-                isinstance(position, bool) or not isinstance(position, int)
-                for position in positions):
-            raise RuntimeError(
-                'hidden-boundary probe positions must contain integers')
-        if len(set(positions)) != len(positions):
-            raise RuntimeError(
-                'hidden-boundary probe positions must be unique')
-        num_tokens = (inputs_embeds.numel() // inputs_embeds.shape[-1]
-                      if inputs_embeds is not None else input_ids.numel())
-        if any(position < 0 or position >= num_tokens
-               for position in positions):
-            raise RuntimeError(
-                f'hidden-boundary probe positions are outside [0, {num_tokens})'
-            )
-        if not self.collect_hidden_boundary_probe:
-            return None
-        device = (inputs_embeds.device
-                  if inputs_embeds is not None else input_ids.device)
-        return torch.tensor(positions, dtype=torch.long, device=device)
 
     def forward(
         self,
@@ -1517,14 +1379,8 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
         past_key_values: list[list[torch.Tensor]],
         attn_metadata: Any = None,
         inputs_embeds: torch.Tensor = None,
-        hidden_boundary_probe_positions: list[int] | None = None,
         **kwargs,
     ):
-        requested_hidden_boundary_probe = (
-            hidden_boundary_probe_positions is not None)
-        probe_positions = self._prepare_hidden_boundary_probe_positions(
-            hidden_boundary_probe_positions, input_ids, inputs_embeds)
-        hidden_boundary_probe = None
         all_routed_experts = None
         if self.enable_return_routed_experts:
             num_tokens = (inputs_embeds.size(1)
@@ -1535,10 +1391,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 dtype=torch.uint16,
             )
         if get_step_ctx_manager().current_context().enable_microbatch:
-            if requested_hidden_boundary_probe:
-                raise RuntimeError(
-                    'DeepseekV2 hidden-boundary probe is not supported with microbatch execution'
-                )
             if all_routed_experts is not None:
                 raise RuntimeError(
                     'DeepseekV2 routed-expert output is not supported with microbatch execution'
@@ -1551,29 +1403,20 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 inputs_embeds=inputs_embeds,
             )
         else:
-            model_output = self.model.forward(
+            hidden_states = self.model.forward(
                 input_ids=input_ids,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 attn_metadata=attn_metadata,
                 inputs_embeds=inputs_embeds,
                 all_routed_experts=all_routed_experts,
-                hidden_boundary_probe_positions=probe_positions,
             )
-            if probe_positions is None:
-                hidden_states = model_output
-                hidden_boundary_probe = None
-            else:
-                hidden_states, hidden_boundary_probe = model_output
-        if (all_routed_experts is None
-                and hidden_boundary_probe is None):
+        if all_routed_experts is None:
             return hidden_states
-        output = {'hidden_states': hidden_states}
-        if all_routed_experts is not None:
-            output['all_routed_experts'] = all_routed_experts
-        if hidden_boundary_probe is not None:
-            output['hidden_boundary_probe'] = hidden_boundary_probe
-        return output
+        return dict(
+            hidden_states=hidden_states,
+            all_routed_experts=all_routed_experts,
+        )
 
     def get_logits(self, hidden_states: torch.Tensor):
         """Compute logits of the model output."""
@@ -1600,8 +1443,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
             past_key_values=past_key_values,
             attn_metadata=attn_metadata,
             inputs_embeds=inputs_embeds,
-            hidden_boundary_probe_positions=
-            context.hidden_boundary_probe_positions,
         )
 
     def _load_weight_experts(self, name: str, loaded_weight: torch.Tensor, params_dict: dict[str, nn.Parameter],

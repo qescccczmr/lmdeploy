@@ -241,13 +241,10 @@ class EngineInstance(EngineInstanceBase):
                 token_ids = []
                 logits = None
                 ce_loss = None
-                hidden_boundary_probe = None
                 if resp_data is not None:
                     # request might be cancelled before any output
                     logits = resp_data.get('logits', None)
                     ce_loss = resp_data.get('ce_loss', None)
-                    hidden_boundary_probe = resp_data.get(
-                        'hidden_boundary_probe', None)
                     gen_token_ids = resp_data.get('token_ids', None)
                     if gen_token_ids is not None:
                         token_ids = gen_token_ids[output_offset:].tolist()
@@ -264,8 +261,6 @@ class EngineInstance(EngineInstanceBase):
                                    cache_block_ids=cache_block_ids,
                                    req_metrics=req_metrics,
                                    routed_experts=routed_experts,
-                                   hidden_boundary_probe=
-                                   hidden_boundary_probe,
                                    logprobs=logprobs,
                                    ce_loss=ce_loss)
                 break

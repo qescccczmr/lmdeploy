@@ -85,7 +85,6 @@ def _make_context(input_ids, position_ids, is_decoding):
         input_embeddings=None,
         input_embedding_indexing=None,
         vision_inputs=None,
-        hidden_boundary_probe_positions=None,
     )
 
 

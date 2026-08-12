@@ -88,106 +88,6 @@ class BatchedLogProbs:
 
 
 @dataclass
-class BF16WireTensor:
-    """Explicit, pickle-safe representation of one BF16 CPU tensor.
-
-    NumPy does not expose a portable bfloat16 dtype.  The MP transport keeps
-    the exact two-byte BF16 storage in a native-endian uint16 array and tags it
-    explicitly so an unrelated uint16 array can never be decoded as BF16.
-    """
-
-    storage: np.ndarray
-    shape: tuple[int, ...]
-    format: str = 'torch.bfloat16.v1'
-
-
-@dataclass
-class HiddenBoundaryProbe:
-    """Selected BF16 hidden-state boundaries transported by the engine."""
-
-    tensors: dict[str, torch.Tensor | BF16WireTensor]
-
-    @staticmethod
-    def _validate_key(key: str) -> None:
-        if not isinstance(key, str) or not key:
-            raise TypeError(
-                'hidden-boundary probe keys must be non-empty strings')
-
-    def to_cpu(self):
-        """Detach and move every probe tensor to contiguous CPU BF16."""
-        tensors = {}
-        for key, value in self.tensors.items():
-            self._validate_key(key)
-            if not isinstance(value, torch.Tensor):
-                raise TypeError(
-                    f'hidden-boundary probe {key!r} must be a torch.Tensor')
-            if not value.is_floating_point():
-                raise TypeError(
-                    f'hidden-boundary probe {key!r} must be floating point')
-            tensors[key] = value.detach().to(
-                device='cpu', dtype=torch.bfloat16).contiguous()
-        return HiddenBoundaryProbe(tensors)
-
-    def to_numpy(self):
-        """Encode CPU BF16 tensors as explicitly tagged uint16 storage."""
-        tensors = {}
-        for key, value in self.tensors.items():
-            self._validate_key(key)
-            if not isinstance(value, torch.Tensor):
-                raise TypeError(
-                    f'hidden-boundary probe {key!r} must be a torch.Tensor')
-            if value.device.type != 'cpu' or value.dtype != torch.bfloat16:
-                raise TypeError(
-                    f'hidden-boundary probe {key!r} must be CPU bfloat16 '
-                    'before MP wire encoding')
-            if not value.is_contiguous():
-                raise ValueError(
-                    f'hidden-boundary probe {key!r} must be contiguous')
-            storage = value.detach().view(torch.uint16).numpy()
-            tensors[key] = BF16WireTensor(
-                storage=storage,
-                shape=tuple(value.shape),
-            )
-        return HiddenBoundaryProbe(tensors)
-
-    def to_tensor(self):
-        """Restore tagged uint16 storage as zero-copy CPU BF16 tensors."""
-        tensors = {}
-        for key, value in self.tensors.items():
-            self._validate_key(key)
-            if not isinstance(value, BF16WireTensor):
-                raise TypeError(
-                    f'hidden-boundary probe {key!r} has no BF16 wire tag')
-            storage = value.storage
-            if value.format != 'torch.bfloat16.v1':
-                raise ValueError(
-                    f'hidden-boundary probe {key!r} has unsupported wire '
-                    f'format {value.format!r}')
-            if not isinstance(storage, np.ndarray):
-                raise TypeError(
-                    f'hidden-boundary probe {key!r} storage must be a NumPy '
-                    'array')
-            if storage.dtype != np.dtype(np.uint16):
-                raise TypeError(
-                    f'hidden-boundary probe {key!r} storage must be '
-                    'native-endian uint16')
-            if not storage.flags.c_contiguous:
-                raise ValueError(
-                    f'hidden-boundary probe {key!r} storage must be '
-                    'C-contiguous')
-            if (not isinstance(value.shape, tuple)
-                    or any(
-                        isinstance(dim, bool) or not isinstance(dim, int)
-                        or dim < 0 for dim in value.shape)
-                    or tuple(storage.shape) != value.shape):
-                raise ValueError(
-                    f'hidden-boundary probe {key!r} shape metadata does not '
-                    'match its storage')
-            tensors[key] = torch.from_numpy(storage).view(torch.bfloat16)
-        return HiddenBoundaryProbe(tensors)
-
-
-@dataclass
 class BatchedOutputs:
     next_token_ids: torch.Tensor
     stopped: torch.Tensor
@@ -198,7 +98,6 @@ class BatchedOutputs:
     new_token_timestamp: int = 0
     extra_outputs: ExtraOutputs | None = None
     all_routed_experts: torch.Tensor | None = None
-    hidden_boundary_probe: HiddenBoundaryProbe | None = None
     ce_loss: torch.Tensor | None = None
 
     def to_cpu(self):
@@ -776,7 +675,6 @@ class BaseModelAgent:
                                             return_ce_loss: bool = False,
                                             seq_length: torch.Tensor = None,
                                             all_routed_experts: Any = None,
-                                            hidden_boundary_probe: dict[str, torch.Tensor] | None = None,
                                             extra_inputs: ExtraInputs = None):
         """Step postprocess with output."""
         rank = self.rank
@@ -826,9 +724,6 @@ class BaseModelAgent:
                            model_metas=model_metas,
                            logprobs=logprobs,
                            all_routed_experts=all_routed_experts,
-                           hidden_boundary_probe=(
-                               HiddenBoundaryProbe(hidden_boundary_probe)
-                               if hidden_boundary_probe is not None else None),
                            extra_outputs=extra_outputs,
                            ce_loss=ce_loss))
 
@@ -877,7 +772,6 @@ class BaseModelAgent:
         stopping_criteria: StoppingCriteria = None,
         return_logits: bool = False,
         return_routed_experts: bool = False,
-        hidden_boundary_probe_positions: list[int] | None = None,
         return_ce_loss: bool = False,
         extra_inputs: ExtraInputs = None,
     ):
@@ -910,15 +804,6 @@ class BaseModelAgent:
                 inputs,
                 delta,
             )
-
-        if hidden_boundary_probe_positions is not None:
-            if inputs is None:
-                raise RuntimeError(
-                    'hidden-boundary probe is only supported for prompt prefill'
-                )
-            inputs = inputs.clone(
-                hidden_boundary_probe_positions=
-                hidden_boundary_probe_positions)
 
         if dp > 1:
             # update inputs for dp
@@ -970,16 +855,6 @@ class BaseModelAgent:
                 all_routed_experts = output.get('all_routed_experts', None)
             else:
                 all_routed_experts = None
-            if hidden_boundary_probe_positions is not None:
-                hidden_boundary_probe = output.get(
-                    'hidden_boundary_probe', None)
-                if hidden_boundary_probe is None:
-                    raise RuntimeError(
-                        'model did not return the requested hidden-boundary probe'
-                    )
-            else:
-                hidden_boundary_probe = None
-
             (
                 inputs,
                 extra_inputs,
@@ -999,7 +874,6 @@ class BaseModelAgent:
                     return_ce_loss=return_ce_loss,
                     seq_length=seq_length,
                     all_routed_experts=all_routed_experts,
-                    hidden_boundary_probe=hidden_boundary_probe,
                     extra_inputs=extra_inputs,
                 ))
         else:
@@ -1242,9 +1116,6 @@ class BaseModelAgent:
                                             dllm_config=self.misc_config.dllm_config,
                                             strategy_factory=self.strategy_factory,
                                             enable_return_routed_experts=enable_return_routed_experts,
-                                            collect_hidden_boundary_probe=(
-                                                self.need_output
-                                                and self.rank == 0),
                                             quant_config=self.model_config.quant_config,
                                             fp32_lm_head=self.model_config.fp32_lm_head,
                                             tie_word_embeddings=self.model_config.tie_word_embeddings,

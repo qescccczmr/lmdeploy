@@ -147,10 +147,6 @@ class GenerationConfig:
     # router replay
     return_routed_experts: bool = False
 
-    # Diagnostic-only selected-position hidden-state boundaries.  This is
-    # intentionally request scoped; production requests leave it unset.
-    hidden_boundary_probe_positions: list[int] | None = None
-
     # ngram, generation would stop if latest [size] tokens are repeated for [threshold] times
     repetition_ngram_size: int = 0
     repetition_ngram_threshold: int = 0
@@ -743,7 +739,6 @@ class EngineOutput:
     cache_block_ids: list[int] | None = None
     req_metrics: RequestMetrics | None = None
     routed_experts: torch.Tensor = None
-    hidden_boundary_probe: dict[str, torch.Tensor] | None = None
     ce_loss: float = None
 
 
