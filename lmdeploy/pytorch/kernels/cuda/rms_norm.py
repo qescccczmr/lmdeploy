@@ -22,8 +22,8 @@ def _compute_rms_norm(x, w, eps: tl.constexpr, N_COLS: tl.constexpr):
 def add_rms_norm_kernel(input, weight, residual, output, out_residual, num_feats, num_groups, stride_ib, stride_ih,
                         stride_id: tl.constexpr, stride_rb, stride_rh, stride_rd: tl.constexpr, stride_ob, stride_oh,
                         stride_od: tl.constexpr, stride_rob, stride_roh, stride_rod: tl.constexpr,
-                        has_residual: tl.constexpr, cast_input_to_bf16: tl.constexpr, eps: tl.constexpr,
-                        N_COLS: tl.constexpr, BLOCK_N: tl.constexpr, NUM_STAGES: tl.constexpr):
+                        has_residual: tl.constexpr, eps: tl.constexpr, N_COLS: tl.constexpr, BLOCK_N: tl.constexpr,
+                        NUM_STAGES: tl.constexpr):
     """Rms norm kernel."""
     prog_id = tl.program_id(0)
     prog_stride = tl.num_programs(0)
@@ -44,9 +44,6 @@ def add_rms_norm_kernel(input, weight, residual, output, out_residual, num_feats
         cur_out_ptrs = out_ptrs + batch_id * stride_ob + head_id * stride_oh
         cur_out_res_ptrs = out_res_ptrs + batch_id * stride_rob + head_id * stride_roh
         x = tl.load(cur_x_ptrs, mask=mask)
-        if cast_input_to_bf16:
-            # Match the original materialized FP32-to-BF16 MoE boundary.
-            x = x.to(tl.bfloat16)
         if has_residual:
             res = tl.load(cur_res_ptrs, mask=mask)
             x += res
@@ -84,8 +81,7 @@ def rms_norm(hidden_states: Tensor,
              eps: float = 1e-6,
              residual: Tensor = None,
              out: Tensor = None,
-             out_residual: Tensor = None,
-             cast_input_to_bf16: bool = False):
+             out_residual: Tensor = None):
     """Rms norm."""
     assert hidden_states.dim() <= 3
     assert weight.stride(-1) == 1
@@ -93,15 +89,8 @@ def rms_norm(hidden_states: Tensor,
     assert hidden_states.size(-1) == feat_size
 
     origin_dim = hidden_states.dim()
-    if cast_input_to_bf16:
-        if (residual is None or hidden_states.dtype != torch.float32
-                or residual.dtype != torch.bfloat16
-                or weight.dtype != torch.bfloat16):
-            raise ValueError(
-                'cast_input_to_bf16 requires FP32 input and BF16 residual/weight')
     if out is None:
-        out = (torch.empty_like(hidden_states, dtype=torch.bfloat16)
-               if cast_input_to_bf16 else torch.empty_like(hidden_states))
+        out = torch.empty_like(hidden_states)
     has_residual = residual is not None
     if has_residual:
         if out_residual is None:
@@ -121,10 +110,6 @@ def rms_norm(hidden_states: Tensor,
     out_residual = _unsqueeze_to_3d(out_residual)
 
     num_feats = hidden_states.numel() // hidden_states.size(-1)
-    if cast_input_to_bf16 and (out.dtype != torch.bfloat16
-                               or out_residual.dtype != torch.bfloat16):
-        raise ValueError(
-            'cast_input_to_bf16 requires BF16 output and residual output')
 
     BLOCK_N = triton.next_power_of_2(feat_size)
 
@@ -159,7 +144,6 @@ def rms_norm(hidden_states: Tensor,
         stride_roh=out_residual.stride(1),
         stride_rod=out_residual.stride(2),
         has_residual=has_residual,
-        cast_input_to_bf16=cast_input_to_bf16,
         eps=eps,
         N_COLS=feat_size,
         BLOCK_N=BLOCK_N,

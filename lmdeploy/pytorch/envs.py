@@ -185,8 +185,6 @@ with set_envs():
     # model format
     scale_fmt = os.getenv('LMDEPLOY_SCALE_FMT', None)
     fp8_moe_only = env_to_bool('LMDEPLOY_FP8_MOE_ONLY', False)
-    enable_kimi_moe_post_norm_fusion = env_to_bool(
-        'LMDEPLOY_ENABLE_KIMI_MOE_POST_NORM_FUSION', True)
 
     # repetition check
     repetition_window_size = env_to_int('LMDEPLOY_REPETITION_WINDOW_SIZE', 1024)

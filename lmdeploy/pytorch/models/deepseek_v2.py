@@ -12,7 +12,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from lmdeploy.pytorch import envs as _envs
 import lmdeploy.pytorch.distributed as dist
 from lmdeploy.pytorch.distributed import get_dist_manager, get_ep_world_rank, get_tp_world_rank
 from lmdeploy.pytorch.model_inputs import StepContext, StepContextManager, get_step_ctx_manager
@@ -56,22 +55,6 @@ _COMPRESSED_TENSORS_EXPERT_PROJECTIONS = {
     'up_proj': ('gate_up', 'up'),
     'down_proj': ('down', 'down'),
 }
-
-
-def _use_kimi_moe_post_norm_fusion(config: Any,
-                                    dtype: torch.dtype | None) -> bool:
-    """Gate deferred MoE output casting to the exact Kimi BF16 contract."""
-    resolved_dtype = dtype if dtype is not None else getattr(config, 'dtype',
-                                                              None)
-    dtype_name = str(resolved_dtype).removeprefix('torch.')
-    return (
-        _envs.enable_kimi_moe_post_norm_fusion
-        and getattr(config, 'model_type', None) == 'kimi_k2'
-        and getattr(config, 'hidden_size', None) == 7168
-        and getattr(config, 'n_routed_experts', None) == 384
-        and getattr(config, 'num_experts_per_tok', None) == 8
-        and dtype_name == 'bfloat16'
-    )
 
 
 def _use_kimi_fused_qkv_a_proj(config: Any, dtype: torch.dtype | None, prefix: str) -> bool:
@@ -813,7 +796,6 @@ class DeepseekV2MoE(nn.Module):
         self.topk_method = config.topk_method
         self.n_group = config.n_group
         self.topk_group = config.topk_group
-        self._defer_tp_reduce_output_cast = False
 
         dist_ctx = get_dist_manager().current_context()
         dist_config = dist_ctx.dist_config
@@ -935,12 +917,7 @@ class DeepseekV2MoE(nn.Module):
         if self._all_reduce:
             if use_promoted_tp_reduce:
                 dist.all_reduce(out_states, group=self.experts.tp_group)
-                defer_output_cast = (
-                    self._defer_tp_reduce_output_cast
-                    and tp_reduce_dtype is torch.float32
-                    and output_dtype is torch.bfloat16)
-                if not defer_output_cast:
-                    out_states = out_states.to(output_dtype)
+                out_states = out_states.to(output_dtype)
             else:
                 dist.all_reduce(out_states)
 
@@ -1028,8 +1005,6 @@ class DeepseekV2DecoderLayer(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         quantization_config = None
-        enable_moe_post_norm_fusion = _use_kimi_moe_post_norm_fusion(
-            config, dtype)
 
         # build attention layer
         if getattr(config, 'use_mla', True):
@@ -1058,9 +1033,6 @@ class DeepseekV2DecoderLayer(nn.Module):
                   device=device,
                   prefix=add_prefix('mlp', prefix),
               ))
-        if isinstance(self.mlp, DeepseekV2MoE):
-            self.mlp._defer_tp_reduce_output_cast = (
-                enable_moe_post_norm_fusion)
 
         # build input layer norm
         self.input_layernorm = RMSNorm(config.hidden_size,
@@ -1068,8 +1040,6 @@ class DeepseekV2DecoderLayer(nn.Module):
                                        quant_config=quantization_config,
                                        dtype=dtype,
                                        device=device,
-                                       cast_input_to_residual_dtype=
-                                       enable_moe_post_norm_fusion,
                                        prefix=add_prefix('input_layernorm', prefix))
 
         # build attention layer norm
@@ -1243,8 +1213,6 @@ class DeepseekV2Model(nn.Module):
             quant_config=None,
             dtype=dtype,
             device=device,
-            cast_input_to_residual_dtype=_use_kimi_moe_post_norm_fusion(
-                config, dtype),
             prefix=add_prefix('norm', prefix),
         )
 

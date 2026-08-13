@@ -22,17 +22,6 @@ class TritonRMSNormImpl(RMSNormImpl):
             x, residual = rms_norm(x, weight, self.eps, residual=residual)
             return x, residual
 
-    def forward_mixed_dtype(self, x: torch.Tensor, weight: torch.Tensor,
-                            residual: torch.Tensor):
-        """Fuse the FP32-to-BF16 boundary cast into add-RMSNorm."""
-        return rms_norm(
-            x,
-            weight,
-            self.eps,
-            residual=residual,
-            cast_input_to_bf16=True,
-        )
-
 
 class TritonRMSNormBuilder(RMSNormBuilder):
     """Triton RMS norm implementation builder."""
