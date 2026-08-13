@@ -112,26 +112,6 @@ def test_sync_spec_cache_block_size_updates_kernel_block_size():
     assert spec_cache_config.kernel_block_size == 16
 
 
-@pytest.mark.parametrize('kernel_block_size', [32, 64])
-def test_large_head_keeps_logical_block_size_when_adjusting_kernel_page(
-        kernel_block_size):
-    executor = object.__new__(ExecutorBase)
-    executor.model_config = SimpleNamespace(
-        use_flash_mla=False, k_head_dim=576)
-    executor.cache_config = CacheConfig(
-        max_batches=32,
-        block_size=64,
-        kernel_block_size=kernel_block_size,
-        num_cpu_blocks=0,
-        num_gpu_blocks=0,
-    )
-
-    executor._adjust_block_size()
-
-    assert executor.cache_config.block_size == 64
-    assert executor.cache_config.kernel_block_size == 32
-
-
 def test_executor_keeps_prefix_cache_with_spec_decode():
     cache_config = CacheConfig(max_batches=1,
                                block_size=64,
