@@ -363,7 +363,6 @@ class ModelConfig:
 
     # flash mla
     use_flash_mla: bool = False
-    use_fa3_mla: bool = False
     use_mla_fp8_cache: bool = False
     mla_index_topk: int | None = None
 

@@ -5,7 +5,6 @@ from typing import Any
 import torch
 from torch.profiler import record_function
 
-from lmdeploy.messages import QuantPolicy
 from lmdeploy.pytorch.backends.deepep_state import get_deepep_state
 from lmdeploy.pytorch.backends.selector import get_backend
 from lmdeploy.pytorch.config import (
@@ -77,21 +76,11 @@ class CUDASingleGraphRunner:
         pool: tuple[int, int],
         model_config: ModelConfig,
         block_size: int,
-        quant_policy: QuantPolicy,
         device: torch.device,
     ):
         self.model = model
         self.ctx_mgr = model.ctx_mgr
         self.model_config = model_config
-        from .attention.fa3 import FA3_MLA_MAX_BATCH_SIZE
-        use_fa3_mla = (
-            getattr(self.model_config, 'use_fa3_mla', False)
-            and self.model_config.model_paradigm == 'ar'
-            and decode_query_len == 1
-            and max_batches <= FA3_MLA_MAX_BATCH_SIZE
-            and self.model_config.dtype in (torch.float16, torch.bfloat16)
-            and quant_policy == QuantPolicy.NONE
-        )
 
         self.meta = CudaGraphMeta(
             max_batchs=max_batches,
@@ -104,13 +93,9 @@ class CUDASingleGraphRunner:
             vocab_size=self.model_config.vocab_size,
             use_mla_fp8_cache=getattr(self.model_config, 'use_mla_fp8_cache', False),
             use_flash_mla=getattr(self.model_config, 'use_flash_mla', False),
-            use_fa3_mla=use_fa3_mla,
             mla_index_topk=getattr(self.model_config, 'mla_index_topk', None),
-            use_fa3_decoding=(
-                (model_config.model_paradigm == 'ar_spec'
-                 and not getattr(model_config, 'use_flash_mla', False))
-                or use_fa3_mla
-            ),
+            use_fa3_decoding=(model_config.model_paradigm == 'ar_spec'
+                              and not getattr(model_config, 'use_flash_mla', False)),
             is_ssm=len(model_config.states_shapes) > 0,
             use_mrope=model_config.use_mrope,
             block_size=block_size,
@@ -309,7 +294,6 @@ class CUDAGraphRunner(GraphRunner):
                 pool=self.graph_pool_handle,
                 model_config=self.model_config,
                 block_size=self.cache_config.kernel_block_size,
-                quant_policy=self.cache_config.quant_policy,
                 device=self.device,
             )
             output = runner.capture(**kwargs)

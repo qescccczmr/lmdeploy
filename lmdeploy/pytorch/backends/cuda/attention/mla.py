@@ -304,6 +304,9 @@ class FlashMLAImpl(TritonAttentionImpl):
                 max_q_seqlen = int(attn_metadata.q_seqlens.max().item())
             else:
                 max_q_seqlen = query.size(0)
+        max_kv_seqlen = attn_metadata.max_kv_seqlen
+        if max_kv_seqlen is None:
+            max_kv_seqlen = kv_flatten_size
         from lmdeploy.pytorch.third_party.flash_attn_interface import flash_attn_varlen_func
         attn_output = flash_attn_varlen_func(
             q=q_rope,
@@ -313,7 +316,7 @@ class FlashMLAImpl(TritonAttentionImpl):
             cu_seqlens_q=attn_metadata.cu_seqlens_q,
             cu_seqlens_k=attn_metadata.cu_seqlens_k,
             max_seqlen_q=max_q_seqlen,
-            max_seqlen_k=attn_metadata.max_kv_seqlen,
+            max_seqlen_k=max_kv_seqlen,
             softmax_scale=self.scale,
             causal=causal,
             window_size=(-1, -1) if self.sliding_window is None else self.sliding_window,

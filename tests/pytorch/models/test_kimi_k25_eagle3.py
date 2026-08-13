@@ -62,7 +62,6 @@ def _draft_config():
         norm_output=True,
         attention_bias=False,
         use_flash_mla=False,
-        use_fa3_mla=False,
     )
 
 

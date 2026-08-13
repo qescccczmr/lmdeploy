@@ -62,13 +62,10 @@ def _make_kimi_eagle3_text_config(*, architecture=_EAGLE3_DEEPSEEK_ARCH, num_lay
     return text_config
 
 
-def _patch_mla_availability(monkeypatch, *, flash=False, fa3=False, backend='auto'):
-    from lmdeploy.pytorch import envs
+def _patch_mla_availability(monkeypatch, *, flash=False):
     import lmdeploy.pytorch.configurations.deepseek_v2 as deepseek_v2_config
 
-    monkeypatch.setattr(envs, 'mla_attention_backend', backend)
     monkeypatch.setattr(deepseek_v2_config, 'flash_mla_available', lambda: flash)
-    monkeypatch.setattr(deepseek_v2_config, 'fa3_mla_available', lambda: fa3)
 
 
 @pytest.mark.parametrize(
@@ -92,8 +89,6 @@ def test_kimi_k25_config_builder_uses_deepseek_mla(monkeypatch, tp, expected_kv_
     assert config.v_head_dim == 0
     assert config.num_key_value_heads == expected_kv_heads
     assert config.use_flash_mla is False
-    assert config.use_fa3_mla is False
-    assert text_config.use_fa3_mla is False
     assert text_config.fuse_qkv_a_proj is True
     assert config.model_paradigm == 'ar'
     assert config.vocab_size == 163840
@@ -184,66 +179,17 @@ def test_kimi_k25_config_builder_condition_rejects_other_model_type():
         SimpleNamespace(model_type='deepseek_v3'))
 
 
-def test_kimi_k25_config_builder_enables_exact_fa3_mla(monkeypatch):
-    _patch_mla_availability(monkeypatch, fa3=True)
-    outer_config, text_config = _make_kimi_k25_config()
-
-    config = AutoModelConfigBuilder.build(outer_config, tp=8)
-
-    assert config.use_flash_mla is False
-    assert config.use_fa3_mla is True
-    assert text_config.use_fa3_mla is True
-
-
 def test_kimi_k25_config_builder_keeps_flash_mla_priority(monkeypatch):
-    _patch_mla_availability(monkeypatch, flash=True, fa3=True)
-    outer_config, text_config = _make_kimi_k25_config()
+    _patch_mla_availability(monkeypatch, flash=True)
+    outer_config, _ = _make_kimi_k25_config()
 
     config = AutoModelConfigBuilder.build(outer_config, tp=8)
 
     assert config.use_flash_mla is True
-    assert config.use_fa3_mla is False
-    assert text_config.use_fa3_mla is False
-
-
-@pytest.mark.parametrize(
-    ('backend', 'expected_flash', 'expected_fa3'),
-    [('flashmla', True, False), ('fa3', False, True)],
-)
-def test_kimi_k25_config_builder_honors_explicit_mla_backend(
-        monkeypatch, backend, expected_flash, expected_fa3):
-    _patch_mla_availability(monkeypatch, flash=True, fa3=True, backend=backend)
-    outer_config, _ = _make_kimi_k25_config()
-
-    config = AutoModelConfigBuilder.build(outer_config, tp=8)
-
-    assert config.use_flash_mla is expected_flash
-    assert config.use_fa3_mla is expected_fa3
-
-
-@pytest.mark.parametrize('backend', ['flashmla', 'fa3'])
-def test_kimi_k25_config_builder_rejects_unavailable_forced_mla_backend(
-        monkeypatch, backend):
-    _patch_mla_availability(monkeypatch, backend=backend)
-    outer_config, _ = _make_kimi_k25_config()
-
-    with pytest.raises(RuntimeError, match=f'{backend} was requested'):
-        AutoModelConfigBuilder.build(outer_config, tp=8)
-
-
-def test_kimi_k25_config_builder_disables_fa3_mla_for_deepseek_mtp(monkeypatch):
-    _patch_mla_availability(monkeypatch, fa3=True)
-    outer_config, text_config = _make_kimi_k25_config()
-
-    config = KimiK25ModelConfigBuilder.build(outer_config, tp=8, spec_method='deepseek_mtp')
-
-    assert config.model_paradigm == 'ar_spec'
-    assert config.use_fa3_mla is False
-    assert text_config.use_fa3_mla is False
 
 
 def test_kimi_eagle3_target_uses_flashmla_and_selects_aux_layers(monkeypatch):
-    _patch_mla_availability(monkeypatch, flash=True, fa3=True)
+    _patch_mla_availability(monkeypatch, flash=True)
     _, text_config = _make_kimi_k25_config()
 
     config = DeepseekV2ModelConfigBuilder.build(
@@ -252,24 +198,12 @@ def test_kimi_eagle3_target_uses_flashmla_and_selects_aux_layers(monkeypatch):
     assert config.model_paradigm == 'ar_spec'
     assert config.num_layers == 61
     assert config.use_flash_mla is True
-    assert config.use_fa3_mla is False
     assert text_config.aux_hidden_state_layers == (2, 30, 58)
     assert text_config.architectures == ['DeepseekV3ForCausalLM']
 
 
-def test_kimi_eagle3_does_not_enable_fa3_fallback(monkeypatch):
-    _patch_mla_availability(monkeypatch, flash=False, fa3=True)
-    _, text_config = _make_kimi_k25_config()
-
-    config = DeepseekV2ModelConfigBuilder.build(
-        text_config, tp=8, spec_method='eagle3')
-
-    assert config.use_flash_mla is False
-    assert config.use_fa3_mla is False
-
-
 def test_kimi_eagle3_draft_preserves_architecture(monkeypatch):
-    _patch_mla_availability(monkeypatch, flash=True, fa3=True)
+    _patch_mla_availability(monkeypatch, flash=True)
     text_config = _make_kimi_eagle3_text_config()
 
     config = DeepseekV2ModelConfigBuilder.build(
@@ -285,7 +219,6 @@ def test_kimi_eagle3_draft_preserves_architecture(monkeypatch):
     assert config.num_layers == 1
     assert config.vocab_size == text_config.draft_vocab_size
     assert config.use_flash_mla is True
-    assert config.use_fa3_mla is False
 
 
 def test_deepseek_mtp_draft_keeps_existing_rewrite(monkeypatch):
@@ -326,17 +259,6 @@ def test_kimi_k2_standalone_config_roundtrip(tmp_path):
     assert actual.hidden_size == 128
     assert actual.num_hidden_layers == 1
     assert actual.num_attention_heads == 8
-
-
-def test_kimi_k25_config_builder_rejects_non_exact_fa3_mla_layout(monkeypatch):
-    _patch_mla_availability(monkeypatch, fa3=True)
-    outer_config, text_config = _make_kimi_k25_config()
-    text_config.kv_lora_rank = 511
-
-    config = AutoModelConfigBuilder.build(outer_config, tp=8)
-
-    assert config.use_fa3_mla is False
-    assert text_config.use_fa3_mla is False
 
 
 @pytest.mark.parametrize('arch', ['KimiK25ForConditionalGeneration', 'Kimi_K25ForConditionalGeneration'])

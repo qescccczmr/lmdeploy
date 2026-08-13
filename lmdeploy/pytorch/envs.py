@@ -189,9 +189,6 @@ with set_envs():
         'LMDEPLOY_ENABLE_KIMI_MOE_POST_NORM_FUSION', True)
     enable_kimi_moe_reduce_shared_fusion = env_to_bool(
         'LMDEPLOY_ENABLE_KIMI_MOE_REDUCE_SHARED_FUSION', False)
-    mla_attention_backend = env_to_choice(
-        'LMDEPLOY_MLA_ATTENTION_BACKEND', 'auto',
-        {'auto', 'fa3', 'flashmla'})
 
     # repetition check
     repetition_window_size = env_to_int('LMDEPLOY_REPETITION_WINDOW_SIZE', 1024)
