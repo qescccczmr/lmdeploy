@@ -187,8 +187,6 @@ with set_envs():
     fp8_moe_only = env_to_bool('LMDEPLOY_FP8_MOE_ONLY', False)
     enable_kimi_moe_post_norm_fusion = env_to_bool(
         'LMDEPLOY_ENABLE_KIMI_MOE_POST_NORM_FUSION', True)
-    enable_kimi_moe_reduce_shared_fusion = env_to_bool(
-        'LMDEPLOY_ENABLE_KIMI_MOE_REDUCE_SHARED_FUSION', False)
 
     # repetition check
     repetition_window_size = env_to_int('LMDEPLOY_REPETITION_WINDOW_SIZE', 1024)

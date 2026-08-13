@@ -318,67 +318,6 @@ def test_marlin_update_is_idempotent_and_partial_reload_fails_closed(
     assert layer.impl.release_count == 1
 
 
-def test_fused_shared_addend_capability_and_forward(monkeypatch):
-    calls = []
-
-    class FakeImpl:
-        supports_fused_shared_addend = True
-
-        def forward(self, hidden_states, topk_weights, topk_idx, *weights,
-                    shared_addend=None):
-            calls.append((hidden_states, topk_weights, topk_idx, weights,
-                          shared_addend))
-            return hidden_states.float() + shared_addend.float()
-
-    layer = FusedMoEW4A16.__new__(FusedMoEW4A16)
-    torch.nn.Module.__init__(layer)
-    layer.impl = FakeImpl()
-    layer.ep = 1
-    layer.tp_mode = ct_moe.TPMode.DEFAULT
-    layer.all_reduce = False
-    layer.gate_up = SimpleNamespace(
-        weight_packed=object(),
-        weight_scale=object(),
-    )
-    layer.down = SimpleNamespace(
-        weight_packed=object(),
-        weight_scale=object(),
-    )
-    monkeypatch.setattr(layer, 'dispatch', lambda state: state)
-
-    hidden_states = torch.ones((2, 4), dtype=torch.bfloat16)
-    topk_weights = torch.ones((2, 1), dtype=torch.float32)
-    topk_idx = torch.zeros((2, 1), dtype=torch.int64)
-    shared_addend = torch.full_like(hidden_states, 0.5)
-
-    result = layer.forward_with_shared_addend(
-        hidden_states,
-        topk_weights,
-        topk_idx,
-        shared_addend,
-    )
-
-    assert layer.supports_fused_shared_addend
-    assert len(calls) == 1
-    assert calls[0][-1] is shared_addend
-    torch.testing.assert_close(
-        result,
-        torch.full_like(result, 1.5),
-        rtol=0,
-        atol=0,
-    )
-
-    layer.ep = 2
-    assert not layer.supports_fused_shared_addend
-    with pytest.raises(RuntimeError, match='requires Marlin'):
-        layer.forward_with_shared_addend(
-            hidden_states,
-            topk_weights,
-            topk_idx,
-            shared_addend,
-        )
-
-
 @pytest.mark.parametrize(
     'weight_type,expected_packed,expected_scale,expected_logical',
     [

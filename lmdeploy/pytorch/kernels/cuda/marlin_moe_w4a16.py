@@ -18,7 +18,7 @@ import triton
 import triton.language as tl
 
 from .activation import silu_and_mul
-from .fused_moe import moe_reduce, moe_reduce_add_fp32
+from .fused_moe import moe_reduce
 
 _MARLIN_AOT_MODULE = '_marlin_moe_w4a16'
 _MARLIN_AOT_ABI_VERSION = 3
@@ -754,7 +754,6 @@ def marlin_moe_w4a16(
     down_packed: torch.Tensor,
     down_scale: torch.Tensor,
     workspace: MarlinMoEWorkspace,
-    shared_addend: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run the accuracy-preserving Marlin W4A16 routed-MoE chain.
 
@@ -769,14 +768,6 @@ def marlin_moe_w4a16(
         raise RuntimeError(
             f'{_MARLIN_AOT_MODULE} is unavailable: {load_error or "not found"}'
         )
-    if shared_addend is not None:
-        if (shared_addend.shape != hidden_states.shape
-                or shared_addend.dtype != torch.bfloat16
-                or shared_addend.device != hidden_states.device
-                or not shared_addend.is_contiguous()):
-            raise ValueError(
-                'Marlin fused shared addend must be contiguous BF16 and '
-                'match hidden_states')
     workspace = workspace.workspace_for_tokens(hidden_states.size(0))
     gate_n, intermediate_size = _validate_marlin_moe_inputs(
         hidden_states,
@@ -792,9 +783,6 @@ def marlin_moe_w4a16(
     topk = topk_ids.size(1)
     num_routes = num_tokens * topk
     if num_tokens == 0:
-        if shared_addend is not None:
-            return hidden_states.new_empty(
-                (0, hidden_states.size(1)), dtype=torch.float32)
         return hidden_states.new_empty((0, hidden_states.size(1)))
 
     gate_up = workspace.gate_up[:num_routes]
@@ -827,15 +815,11 @@ def marlin_moe_w4a16(
             size_k=intermediate_size,
             topk=1,
         )
-        expert_output = expert_output.view(
-            num_tokens, topk, hidden_states.size(1))
-        if shared_addend is not None:
-            return moe_reduce_add_fp32(
-                expert_output,
-                topk_weights,
-                shared_addend,
-            )
-        return moe_reduce(expert_output, topk_weights, fp32_acc=True)
+        return moe_reduce(
+            expert_output.view(num_tokens, topk, hidden_states.size(1)),
+            topk_weights,
+            fp32_acc=True,
+        )
 
 
 __all__ = [

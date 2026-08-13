@@ -94,7 +94,6 @@ class MarlinFusedMoEW4A16Impl(FusedMoEW4A16Impl):
     """Marlin W4A16 routed experts over post-load converted weights."""
 
     runtime_weight_layout = 'marlin'
-    supports_fused_shared_addend = True
 
     def __init__(
         self,
@@ -231,7 +230,6 @@ class MarlinFusedMoEW4A16Impl(FusedMoEW4A16Impl):
         gate_up_scale: torch.Tensor,
         down_packed: torch.Tensor,
         down_scale: torch.Tensor,
-        shared_addend: torch.Tensor | None = None,
     ):
         """Run non-atomic Marlin and preserve FP32 router accumulation."""
         if self.workspace is None:
@@ -246,7 +244,6 @@ class MarlinFusedMoEW4A16Impl(FusedMoEW4A16Impl):
             down_packed,
             down_scale,
             self.workspace,
-            shared_addend=shared_addend,
         )
 
 

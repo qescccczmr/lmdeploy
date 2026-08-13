@@ -121,7 +121,6 @@ class FusedMoEW4A16Impl(ABC):
     """Compressed-tensors fused MoE W4A16 implementation."""
 
     runtime_weight_layout = 'checkpoint'
-    supports_fused_shared_addend = False
 
     def process_weights_after_loading(
         self,

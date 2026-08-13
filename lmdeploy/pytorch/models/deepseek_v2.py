@@ -74,18 +74,6 @@ def _use_kimi_moe_post_norm_fusion(config: Any,
     )
 
 
-def _use_kimi_moe_reduce_shared_fusion(
-    config: Any,
-    dtype: torch.dtype | None,
-) -> bool:
-    """Gate exact routed-reduce/shared-add fusion to Kimi BF16."""
-    return (
-        _envs.enable_kimi_moe_reduce_shared_fusion
-        and _use_kimi_moe_post_norm_fusion(config, dtype)
-        and getattr(config, 'n_shared_experts', None) == 1
-    )
-
-
 def _use_kimi_fused_qkv_a_proj(config: Any, dtype: torch.dtype | None, prefix: str) -> bool:
     """Check the Kimi BF16/FP16 replicated MLA A-projection contract."""
     if not getattr(config, 'fuse_qkv_a_proj', False):
@@ -825,8 +813,6 @@ class DeepseekV2MoE(nn.Module):
         self.topk_method = config.topk_method
         self.n_group = config.n_group
         self.topk_group = config.topk_group
-        self._enable_moe_reduce_shared_fusion = (
-            _use_kimi_moe_reduce_shared_fusion(config, dtype))
         self._defer_tp_reduce_output_cast = False
 
         dist_ctx = get_dist_manager().current_context()
@@ -887,64 +873,29 @@ class DeepseekV2MoE(nn.Module):
         if all_routed_experts is not None:
             all_routed_experts[:, self.layer_idx, :] = topk_ids
 
-        shared_states = None
-        logical_output_dtype = None
-        if self._can_fuse_moe_reduce_shared():
-            shared_states = self.shared_experts(hidden_states)
-            shared_states = shared_states.reshape(-1, hidden_dim)
-            out_states = self.experts.forward_with_shared_addend(
-                hidden_states,
-                topk_weights,
-                topk_ids,
-                shared_states,
-            )
-            # The physical output is FP32, but the fused boundary remains
-            # logically BF16 for the following TP cast/defer decision.
-            logical_output_dtype = hidden_states.dtype
-            shared_states = None
-        else:
-            out_states = self.experts(
-                hidden_states,
-                topk_weights,
-                topk_ids,
-            )
-            if self.shared_experts is not None:
-                shared_states = self.shared_experts(hidden_states)
-                shared_states = shared_states.reshape(
-                    batch_size, sequence_length, -1)
-        out_states = out_states.reshape(batch_size, sequence_length, -1)
-        out_states = self._combine_expert_outputs(
-            out_states,
-            shared_states,
-            logical_output_dtype=logical_output_dtype,
+        out_states = self.experts(
+            hidden_states,
+            topk_weights,
+            topk_ids,
         )
+
+        shared_states = None
+        if self.shared_experts is not None:
+            shared_states = self.shared_experts(hidden_states)
+            shared_states = shared_states.reshape(batch_size, sequence_length,
+                                                  -1)
+        out_states = out_states.reshape(batch_size, sequence_length, -1)
+        out_states = self._combine_expert_outputs(out_states, shared_states)
 
         return out_states
-
-    def _can_fuse_moe_reduce_shared(self) -> bool:
-        """Whether this synchronous TP layer satisfies the narrow contract."""
-        experts = self.experts
-        return (
-            getattr(self, '_enable_moe_reduce_shared_fusion', False)
-            and self._defer_tp_reduce_output_cast
-            and self.shared_experts is not None
-            and self._all_reduce
-            and getattr(experts, 'ep', 1) == 1
-            and getattr(experts, 'tp_reduce_dtype', None) is torch.float32
-            and getattr(experts, 'all_reduce', True) is False
-            and getattr(experts, 'supports_fused_shared_addend', False)
-        )
 
     def _combine_expert_outputs(
         self,
         out_states: torch.Tensor,
         shared_states: torch.Tensor | None,
-        logical_output_dtype: torch.dtype | None = None,
     ):
         """Combine routed and shared outputs under their distribution contract."""
-        output_dtype = (logical_output_dtype
-                        if logical_output_dtype is not None
-                        else out_states.dtype)
+        output_dtype = out_states.dtype
         tp_reduce_dtype = getattr(self.experts, 'tp_reduce_dtype', None)
         use_promoted_tp_reduce = self._all_reduce and tp_reduce_dtype is not None
 
