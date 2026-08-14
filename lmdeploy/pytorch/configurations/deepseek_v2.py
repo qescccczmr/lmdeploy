@@ -5,6 +5,23 @@ from .builder import AutoModelConfigBuilder
 from .utils import flash_mla_available
 
 
+_EAGLE3_DEEPSEEK_ARCH = 'Eagle3DeepseekV2ForCausalLM'
+
+
+def _enable_kimi_fused_qkv_a_proj(hf_config) -> bool:
+    """Return whether Kimi can merge its replicated MLA A projections."""
+    dtype = str(getattr(hf_config, 'dtype', '')).removeprefix('torch.')
+    return (
+        getattr(hf_config, 'model_type', None) == 'kimi_k2'
+        and getattr(hf_config, 'q_lora_rank', None) is not None
+        and getattr(hf_config, 'hidden_size', None) == 7168
+        and hf_config.q_lora_rank == 1536
+        and getattr(hf_config, 'kv_lora_rank', None) == 512
+        and getattr(hf_config, 'qk_rope_head_dim', None) == 64
+        and dtype in {'bfloat16', 'float16'}
+    )
+
+
 class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
 
     @classmethod
@@ -15,6 +32,7 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
     @classmethod
     def build(cls, hf_config, model_path: str = None, is_draft_model: bool = False, spec_method: str = None, **kwargs):
         """build."""
+        hf_config.fuse_qkv_a_proj = _enable_kimi_fused_qkv_a_proj(hf_config)
         head_dim = (hf_config.kv_lora_rank + hf_config.qk_rope_head_dim)
         k_head_dim = head_dim
         v_head_dim = 0
@@ -24,23 +42,43 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
         tp = kwargs.get('tp', 1)
         # update num_kv_heads for tp mode
         num_key_value_heads = cls.update_num_kv_heads(hf_config, tp, num_key_value_heads)
+        model_paradigm = 'ar'
+        supported_spec_methods = {'deepseek_mtp', 'eagle3'}
+        if spec_method is not None and spec_method not in supported_spec_methods:
+            raise ValueError(f'Unsupported speculative method for DeepSeek V2: {spec_method}')
+        if spec_method == 'eagle3' and hf_config.model_type != 'kimi_k2':
+            raise ValueError('DeepSeek EAGLE3 is currently supported only for Kimi-K2 models.')
+        if is_draft_model or spec_method is not None:
+            model_paradigm = 'ar_spec'
+
         hf_config.use_flash_mla = flash_mla_available()
         num_layers = hf_config.num_hidden_layers
-        model_paradigm = 'ar'
-
-        if spec_method is not None:
-            assert spec_method == 'deepseek_mtp'
+        vocab_size = hf_config.vocab_size
+        architectures = getattr(hf_config, 'architectures', None) or []
 
         # draft model cfg
         if is_draft_model:
-            num_layers = hf_config.num_nextn_predict_layers
-            hf_config.architectures[0] = 'DeepseekMTPModel'
-            # remove for correct mapping when building the patched model
-            if hasattr(hf_config, 'auto_map'):
-                del hf_config.auto_map
-
-        if is_draft_model or spec_method is not None:
-            model_paradigm = 'ar_spec'
+            if spec_method == 'deepseek_mtp':
+                num_layers = hf_config.num_nextn_predict_layers
+                hf_config.architectures[0] = 'DeepseekMTPModel'
+                # remove for correct mapping when building the patched model
+                if hasattr(hf_config, 'auto_map'):
+                    del hf_config.auto_map
+            elif spec_method == 'eagle3':
+                if not architectures or architectures[0] != _EAGLE3_DEEPSEEK_ARCH:
+                    raise ValueError(
+                        'Kimi-K2 EAGLE3 draft config must use architecture '
+                        f'{_EAGLE3_DEEPSEEK_ARCH}.')
+                if hf_config.num_hidden_layers != 1:
+                    raise ValueError('Kimi-K2 EAGLE3 draft model must contain exactly one layer.')
+                num_layers = 1
+                vocab_size = getattr(hf_config, 'draft_vocab_size', None) or hf_config.vocab_size
+            else:
+                raise ValueError('A speculative method is required when building a DeepSeek draft model.')
+        elif spec_method == 'eagle3':
+            if num_layers < 5:
+                raise ValueError('Kimi-K2 EAGLE3 target model must contain at least five layers.')
+            hf_config.aux_hidden_state_layers = (2, num_layers // 2, num_layers - 3)
 
         bos_token_id = getattr(hf_config, 'bos_token_id', None)
         config = ModelConfig(
@@ -53,7 +91,7 @@ class DeepseekV2ModelConfigBuilder(AutoModelConfigBuilder):
             head_dim=head_dim,
             k_head_dim=k_head_dim,
             v_head_dim=v_head_dim,
-            vocab_size=hf_config.vocab_size,
+            vocab_size=vocab_size,
             use_flash_mla=hf_config.use_flash_mla,
             model_paradigm=model_paradigm,
         )
