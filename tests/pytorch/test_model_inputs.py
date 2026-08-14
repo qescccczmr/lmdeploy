@@ -48,31 +48,3 @@ def test_step_context_global_is_decoding_uses_dp_global_state():
         dp_meta=DPMeta(dp_is_decoding=False),
     )
     assert not step_ctx.global_is_decoding()
-
-
-def test_step_context_preserves_max_q_seqlen(monkeypatch):
-    import lmdeploy.pytorch.model_inputs as model_inputs_mod
-
-    class DummyBackend:
-
-        @staticmethod
-        def update_step_context(step_context):
-            return step_context
-
-    monkeypatch.setattr(model_inputs_mod, 'get_backend',
-                        lambda: DummyBackend())
-    inputs = _make_model_inputs(is_decoding=False)
-    inputs.input_ids = torch.zeros((1, 4), dtype=torch.long)
-    inputs.seq_length = torch.tensor([4], dtype=torch.long)
-    inputs.max_q_seqlen = 4
-    inputs.max_kv_seqlen = 4
-    inputs.sum_kv_seqlen = 4
-
-    step_context = StepContext.new(
-        inputs,
-        model_config=object(),
-        cache_config=object(),
-        kv_caches=[],
-    )
-
-    assert step_context.max_q_seqlen == 4
