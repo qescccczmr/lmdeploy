@@ -69,12 +69,11 @@ def test_get_num_qkv_head_by_tp_requires_divisible_heads():
         model_config.get_num_qkv_head_by_tp()
 
 
-def test_dp_attention_builds_kimi_tp8_ep8_topology():
+def test_dp_attention_infers_kimi_tp8_ep8_topology():
     engine_config = PytorchEngineConfig(
         tp=8,
         dp=8,
         ep=8,
-        attn_tp_size=1,
     )
 
     dist_config = DistConfig.from_engine_config(engine_config)

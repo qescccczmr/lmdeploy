@@ -13,21 +13,6 @@ from .utils import (
 )
 
 
-def _get_dp_attention_tp_size(args):
-    """Resolve the explicit DP-attention flag to the existing topology."""
-    if not args.enable_dp_attention:
-        return None
-    if args.dp <= 1:
-        raise ValueError('--enable-dp-attention requires --dp greater than 1')
-
-    world_size = args.ep if args.ep > 1 else args.tp
-    if world_size < args.dp or world_size % args.dp != 0:
-        raise ValueError(
-            '--enable-dp-attention requires the model parallel world size '
-            f'to be divisible by --dp, got world_size={world_size}, dp={args.dp}.')
-    return world_size // args.dp
-
-
 class SubCliServe:
     """Serve LLMs and interact on terminal."""
     _help = 'Serve LLMs with openai API'
@@ -151,7 +136,6 @@ class SubCliServe:
         disable_metrics = ArgumentHelper.disable_metrics(pt_group)
         dp = ArgumentHelper.dp(pt_group)
         ep_act = ArgumentHelper.ep(pt_group)
-        ArgumentHelper.enable_dp_attention(pt_group)
         ArgumentHelper.enable_microbatch(pt_group)
         ArgumentHelper.enable_eplb(pt_group)
         ArgumentHelper.role(pt_group)
@@ -251,13 +235,11 @@ class SubCliServe:
         if backend == 'pytorch':
             from lmdeploy.messages import PytorchEngineConfig
             adapters = get_lora_adapters(args.adapters)
-            attn_tp_size = _get_dp_attention_tp_size(args)
             backend_config = PytorchEngineConfig(
                 dtype=args.dtype,
                 tp=args.tp,
                 dp=args.dp,
                 ep=args.ep,
-                attn_tp_size=attn_tp_size,
                 max_batch_size=max_batch_size,
                 cache_max_entry_count=args.cache_max_entry_count,
                 block_size=args.cache_block_seq_len,
@@ -289,9 +271,6 @@ class SubCliServe:
                 distributed_executor_backend=args.distributed_executor_backend,
             )
         else:
-            if args.enable_dp_attention:
-                raise ValueError(
-                    '--enable-dp-attention is only supported by the PyTorch backend.')
             from lmdeploy.messages import TurbomindEngineConfig
             backend_config = TurbomindEngineConfig(dtype=args.dtype,
                                                    tp=args.tp,

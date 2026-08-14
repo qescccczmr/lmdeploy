@@ -193,17 +193,6 @@ class ArgumentHelper:
                                    help='expert parallelism. dp is required when pytorch engine is used.')
 
     @staticmethod
-    def enable_dp_attention(parser):
-        """Add argument enable_dp_attention to parser."""
-
-        return parser.add_argument(
-            '--enable-dp-attention',
-            action='store_true',
-            default=False,
-            help='Explicitly select the data-parallel attention layout. '
-            'Requires --dp greater than 1.')
-
-    @staticmethod
     def cp(parser):
         """Add argument cp to parser."""
 
