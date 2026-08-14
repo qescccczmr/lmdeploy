@@ -75,7 +75,6 @@ class CUDASingleGraphRunner:
         decode_query_len: int,
         pool: tuple[int, int],
         model_config: ModelConfig,
-        block_size: int,
         device: torch.device,
     ):
         self.model = model
@@ -98,7 +97,7 @@ class CUDASingleGraphRunner:
                               and not getattr(model_config, 'use_flash_mla', False)),
             is_ssm=len(model_config.states_shapes) > 0,
             use_mrope=model_config.use_mrope,
-            block_size=block_size,
+            block_size=model_config.block_size,
             decode_query_len=decode_query_len,
         )
         self.device = device
@@ -293,7 +292,6 @@ class CUDAGraphRunner(GraphRunner):
                 decode_query_len=decode_query_len,
                 pool=self.graph_pool_handle,
                 model_config=self.model_config,
-                block_size=self.cache_config.kernel_block_size,
                 device=self.device,
             )
             output = runner.capture(**kwargs)

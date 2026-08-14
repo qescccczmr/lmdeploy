@@ -106,6 +106,7 @@ def test_cudagraph_preserves_spec_fa3():
             model_paradigm=paradigm,
             states_shapes=[],
             use_mrope=False,
+            block_size=32,
         )
         return CUDASingleGraphRunner(
             model,
@@ -116,7 +117,6 @@ def test_cudagraph_preserves_spec_fa3():
             decode_query_len=query_len,
             pool=None,
             model_config=model_config,
-            block_size=32,
             device=torch.device('cpu'),
         )
 
