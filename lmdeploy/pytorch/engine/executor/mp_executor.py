@@ -64,7 +64,7 @@ class Notifier:
         if self._event_id == NUM_SHARED_BLOCK - 1:
             await event_loop.run_in_executor(None, self.bar.wait)
             [event.clear() for event in self.events]
-            await event_loop.run_in_executor(None, self.bar.wait)
+            self.bar.wait()
         self._update_event_id()
 
     @contextmanager
@@ -82,8 +82,8 @@ class Notifier:
         await event_loop.run_in_executor(None, self.events[self._event_id].wait)
         yield
         if self._event_id == NUM_SHARED_BLOCK - 1:
-            await event_loop.run_in_executor(None, self.bar.wait)
-            await event_loop.run_in_executor(None, self.bar.wait)
+            self.bar.wait()
+            self.bar.wait()
         self._update_event_id()
 
     def close(self):
@@ -182,22 +182,6 @@ class SharedBuffer:
         data = pickle.loads(dumped_data)
         return data
 
-    async def _receive_step1_async(self, dumped_data, is_receiver, remain_size):
-        """Receive the remaining packages without blocking the event loop."""
-        while remain_size > 0:
-            async with self.notifier.wait_async():
-                with self.acquire_buf() as buf:
-                    pac_size = min(remain_size, SHARED_BLOCK_SIZE)
-                    remain_size -= pac_size
-                    if not is_receiver:
-                        continue
-                    dumped_data += buf[HEAD_SIZE:HEAD_SIZE + pac_size]
-
-        if not is_receiver:
-            return None
-        data = pickle.loads(dumped_data)
-        return data
-
     def receive(self):
         """Unpack data."""
         with self.notifier.wait():
@@ -208,11 +192,7 @@ class SharedBuffer:
         """Async receive data."""
         async with self.notifier.wait_async():
             dumped_data, is_receiver, remain_size = self._receive_step0()
-        return await self._receive_step1_async(
-            dumped_data,
-            is_receiver,
-            remain_size,
-        )
+        return self._receive_step1(dumped_data, is_receiver, remain_size)
 
     def close(self):
         if self.is_closed:
@@ -429,8 +409,7 @@ class MPExecutor(ExecutorBase):
 
     async def get_output_async(self):
         """Get output async."""
-        output = await self.remote_outs.get()
-        return output.to_tensor()
+        return await self.remote_outs.get()
 
     def get_input_processor(self):
         """Get input processor."""
@@ -484,10 +463,6 @@ class MPWorkerWrapper(WorkerWrapperBase):
             log_level=log_level,
             trust_remote_code=trust_remote_code
         )
-
-    def pack_output(self, output: dict):
-        """Convert tensors unsupported by plain pickle to NumPy."""
-        return output.to_numpy()
 
 
 class ExecutorProc:
