@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 
 import math
+import re
 from collections.abc import Iterable
 from copy import deepcopy
 from enum import Enum, auto
@@ -29,6 +30,7 @@ from lmdeploy.pytorch.nn.linear import (
     build_colwise_linear,
     build_down_linear,
     build_gateup_linear,
+    build_merged_colwise_linear,
     build_o_proj,
     build_rowwise_linear,
 )
@@ -36,7 +38,49 @@ from lmdeploy.pytorch.nn.moe import MoeType, SoftmaxTopK, build_fused_moe
 from lmdeploy.pytorch.nn.rotary_embedding import get_rope_parameters, get_rope_theta
 from lmdeploy.pytorch.weight_loader.model_weight_loader import load_weight
 
+from .patch import add_prefix, get_build_model_context
 from .utils.cudagraph import CudaGraphMixin
+
+
+_COMPRESSED_TENSORS_EXPERT_WEIGHT_RE = re.compile(
+    r'^(?P<prefix>(?:.+\.)?experts)\.(?P<expert_id>[0-9]+)\.'
+    r'(?P<projection>gate_proj|up_proj|down_proj)\.(?P<suffix>[^.]+)$')
+_COMPRESSED_TENSORS_EXPERT_SUFFIXES = frozenset({
+    'weight_packed',
+    'weight_scale',
+    'weight_shape',
+})
+_COMPRESSED_TENSORS_EXPERT_PROJECTIONS = {
+    'gate_proj': ('gate_up', 'gate'),
+    'up_proj': ('gate_up', 'up'),
+    'down_proj': ('down', 'down'),
+}
+
+
+def _use_kimi_fused_qkv_a_proj(config: Any, dtype: torch.dtype | None, prefix: str) -> bool:
+    """Check the Kimi BF16/FP16 replicated MLA A-projection contract."""
+    if not getattr(config, 'fuse_qkv_a_proj', False):
+        return False
+    resolved_dtype = dtype if dtype is not None else getattr(config, 'dtype', None)
+    dtype_name = str(resolved_dtype).removeprefix('torch.')
+    if (
+        getattr(config, 'model_type', None) != 'kimi_k2'
+        or getattr(config, 'q_lora_rank', None) is None
+        or getattr(config, 'hidden_size', None) != 7168
+        or config.q_lora_rank != 1536
+        or getattr(config, 'kv_lora_rank', None) != 512
+        or getattr(config, 'qk_rope_head_dim', None) != 64
+        or dtype_name not in {'bfloat16', 'float16'}
+    ):
+        return False
+
+    quant_config = get_build_model_context().quant_config
+    source_prefixes = (
+        add_prefix('q_a_proj', prefix),
+        add_prefix('kv_a_proj_with_mqa', prefix),
+    )
+    return all(quant_config.get_quant_method(source_prefix, module_kind='linear') is None
+               for source_prefix in source_prefixes)
 
 
 # microbatch
@@ -387,7 +431,13 @@ class DeepseekV2BMM(nn.Module):
 class DeepseekV2Attention(nn.Module):
     """Deepseekv2 attention."""
 
-    def __init__(self, config: Any, dtype: torch.dtype = None, device: torch.device = None):
+    def __init__(
+        self,
+        config: Any,
+        dtype: torch.dtype = None,
+        device: torch.device = None,
+        prefix: str = '',
+    ):
         super().__init__()
         quantization_config = getattr(config, 'quantization_config', None)
         self.q_lora_rank = config.q_lora_rank
@@ -401,6 +451,7 @@ class DeepseekV2Attention(nn.Module):
         num_replicate_kv_heads = getattr(config, 'num_replicate_key_value_heads', 1)
         num_key_value_heads = getattr(config, 'num_key_value_heads', 1)
         use_flash_mla = getattr(config, 'use_flash_mla', False)
+        self.fuse_qkv_a_proj = _use_kimi_fused_qkv_a_proj(config, dtype, prefix)
 
         if self.q_lora_rank is None:
             self.q_proj = build_colwise_linear(
@@ -412,22 +463,40 @@ class DeepseekV2Attention(nn.Module):
                 is_tp=True,
                 quant_config=quantization_config,
                 dp_disable_tp=True,
+                prefix=add_prefix('q_proj', prefix),
             )
         else:
-            self.q_a_proj = build_colwise_linear(
-                self.hidden_size,
-                config.q_lora_rank,
-                bias=config.attention_bias,
-                dtype=dtype,
-                device=device,
-                is_tp=False,
-                quant_config=quantization_config,
-            )
+            if self.fuse_qkv_a_proj:
+                self.fused_qkv_a_proj_with_mqa = build_merged_colwise_linear(
+                    self.hidden_size,
+                    [config.q_lora_rank, config.kv_lora_rank + config.qk_rope_head_dim],
+                    bias=config.attention_bias,
+                    dtype=dtype,
+                    device=device,
+                    is_tp=False,
+                    out_names=['q', 'kv'],
+                    quant_config=quantization_config,
+                    check_dist=False,
+                    layer_type='attn',
+                    prefix=add_prefix('fused_qkv_a_proj_with_mqa', prefix),
+                )
+            else:
+                self.q_a_proj = build_colwise_linear(
+                    self.hidden_size,
+                    config.q_lora_rank,
+                    bias=config.attention_bias,
+                    dtype=dtype,
+                    device=device,
+                    is_tp=False,
+                    quant_config=quantization_config,
+                    prefix=add_prefix('q_a_proj', prefix),
+                )
             self.q_a_layernorm = RMSNorm(config.q_lora_rank,
                                          1e-6,
                                          quant_config=quantization_config,
                                          dtype=dtype,
-                                         device=device)
+                                         device=device,
+                                         prefix=add_prefix('q_a_layernorm', prefix))
             self.q_b_proj = build_colwise_linear(
                 config.q_lora_rank,
                 self.num_heads * self.q_head_dim,
@@ -437,22 +506,26 @@ class DeepseekV2Attention(nn.Module):
                 is_tp=True,
                 quant_config=quantization_config,
                 dp_disable_tp=True,
+                prefix=add_prefix('q_b_proj', prefix),
             )
 
-        self.kv_a_proj_with_mqa = build_colwise_linear(
-            self.hidden_size,
-            config.kv_lora_rank + config.qk_rope_head_dim,
-            bias=config.attention_bias,
-            dtype=dtype,
-            device=device,
-            is_tp=False,
-            quant_config=quantization_config,
-        )
+        if not self.fuse_qkv_a_proj:
+            self.kv_a_proj_with_mqa = build_colwise_linear(
+                self.hidden_size,
+                config.kv_lora_rank + config.qk_rope_head_dim,
+                bias=config.attention_bias,
+                dtype=dtype,
+                device=device,
+                is_tp=False,
+                quant_config=quantization_config,
+                prefix=add_prefix('kv_a_proj_with_mqa', prefix),
+            )
         self.kv_a_layernorm = RMSNorm(config.kv_lora_rank,
                                       1e-6,
                                       quant_config=quantization_config,
                                       dtype=dtype,
-                                      device=device)
+                                      device=device,
+                                      prefix=add_prefix('kv_a_layernorm', prefix))
         self.kc = DeepseekV2BMM(self.num_heads,
                                 config.qk_nope_head_dim,
                                 config.kv_lora_rank,
@@ -488,9 +561,15 @@ class DeepseekV2Attention(nn.Module):
             device=device,
             is_tp=True,
             quant_config=quantization_config,
+            prefix=add_prefix('o_proj', prefix),
         )
 
-    def _q_proj(self, hidden_states, num_heads: int, nope_size: int, pe_size: int):
+    def _q_proj(self,
+                hidden_states,
+                num_heads: int,
+                nope_size: int,
+                pe_size: int,
+                q_a_states: torch.Tensor | None = None):
         """Q proj."""
         q_len = hidden_states.size(1)
 
@@ -499,7 +578,9 @@ class DeepseekV2Attention(nn.Module):
         if self.q_lora_rank is None:
             q = self.q_proj(hidden_states)
         else:
-            q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))
+            if q_a_states is None:
+                q_a_states = self.q_a_proj(hidden_states)
+            q = self.q_b_proj(self.q_a_layernorm(q_a_states))
         q = q.view(q_len, num_heads, self.q_head_dim)
         # q_pe: (q_len, num_heads, qk_rope_head_dim)
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
@@ -508,10 +589,13 @@ class DeepseekV2Attention(nn.Module):
         self.kc(q_nope, q_nope_out)
         return query_states, q_pe
 
-    def _kv_proj(self, hidden_states, nope_size: int):
+    def _kv_proj(self, hidden_states, nope_size: int, kv_a_states: torch.Tensor | None = None):
         """Kv proj."""
         # (q_len, 1, nope_size + pe_size)
-        key_states = self.kv_a_proj_with_mqa(hidden_states[0, :, None])
+        if kv_a_states is None:
+            key_states = self.kv_a_proj_with_mqa(hidden_states[0, :, None])
+        else:
+            key_states = kv_a_states[0, :, None]
         # (q_len, 1, pe_size)
         k_pe = key_states[..., nope_size:]
         # kv_a_layernorm
@@ -524,8 +608,23 @@ class DeepseekV2Attention(nn.Module):
         """Qkv proj."""
         nope_size = self.kv_lora_rank
         pe_size = self.qk_rope_head_dim
-        query_states, q_pe = self._q_proj(hidden_states, num_heads, nope_size, pe_size)
-        key_states, value_states, k_pe = self._kv_proj(hidden_states, nope_size)
+        q_a_states = None
+        kv_a_states = None
+        if getattr(self, 'fuse_qkv_a_proj', False):
+            fused_states = self.fused_qkv_a_proj_with_mqa(hidden_states)
+            q_a_states, kv_a_states = fused_states.split([self.q_lora_rank, nope_size + pe_size], dim=-1)
+        query_states, q_pe = self._q_proj(
+            hidden_states,
+            num_heads,
+            nope_size,
+            pe_size,
+            q_a_states=q_a_states,
+        )
+        key_states, value_states, k_pe = self._kv_proj(
+            hidden_states,
+            nope_size,
+            kv_a_states=kv_a_states,
+        )
 
         return query_states, key_states, value_states, q_pe, k_pe
 
@@ -547,7 +646,8 @@ class DeepseekV2Attention(nn.Module):
         q_len = hidden_states.size(1)
 
         # qkv_proj
-        query_states, key_states, value_states, q_pe, k_pe = self._qkv_proj(hidden_states, num_heads=num_heads)
+        query_states, key_states, value_states, q_pe, k_pe = self._qkv_proj(
+            hidden_states, num_heads=num_heads)
 
         cos, sin = rotary_pos_emb
         q_pe, k_pe = self.apply_rotary_pos_emb(
@@ -685,7 +785,14 @@ class MoEGate(nn.Module):
 class DeepseekV2MoE(nn.Module):
     """Deepseek v2 MoE."""
 
-    def __init__(self, config: Any, layer_idx, dtype: torch.dtype = None, device: torch.device = None):
+    def __init__(
+        self,
+        config: Any,
+        layer_idx,
+        dtype: torch.dtype = None,
+        device: torch.device = None,
+        prefix: str = '',
+    ):
         super().__init__()
         self.layer_idx = layer_idx
         quantization_config = getattr(config, 'quantization_config', None)
@@ -704,6 +811,8 @@ class DeepseekV2MoE(nn.Module):
         dist_config = dist_ctx.dist_config
         dp = dist_config.dp
         world_size = dist_config.world_size
+        self._shared_expert_tp_group = getattr(
+            getattr(dist_ctx, 'mlp_tp_group', None), 'gpu_group', None)
         moe_all_reduce = dp > 1 and dist_config.tp > 1
         if get_dist_manager().current_context().dist_config.enable_eplb:
             eplb_dispatch_info = EPLBManager.get_dispatch_info(
@@ -725,6 +834,7 @@ class DeepseekV2MoE(nn.Module):
             all_reduce=moe_all_reduce,
             quant_config=quantization_config,
             layer_idx=layer_idx,
+            prefix=add_prefix('experts', prefix),
         )
         self.shared_experts = None
         if config.n_shared_experts is not None:
@@ -735,6 +845,7 @@ class DeepseekV2MoE(nn.Module):
                 dtype=dtype,
                 device=device,
                 is_shared_expert=True,
+                prefix=add_prefix('shared_experts', prefix),
             )
 
         if dp == 1 and world_size > 1:
@@ -757,13 +868,65 @@ class DeepseekV2MoE(nn.Module):
             topk_ids,
         )
 
+        shared_states = None
         if self.shared_experts is not None:
             shared_states = self.shared_experts(hidden_states)
-            out_states += shared_states
+            shared_states = shared_states.reshape(batch_size, sequence_length,
+                                                  -1)
         out_states = out_states.reshape(batch_size, sequence_length, -1)
+        out_states = self._combine_expert_outputs(out_states, shared_states)
+
+        return out_states
+
+    def _combine_expert_outputs(
+        self,
+        out_states: torch.Tensor,
+        shared_states: torch.Tensor | None,
+    ):
+        """Combine routed and shared outputs under their distribution contract."""
+        output_dtype = out_states.dtype
+        tp_reduce_dtype = getattr(self.experts, 'tp_reduce_dtype', None)
+        use_promoted_tp_reduce = self._all_reduce and tp_reduce_dtype is not None
+
+        # DeepEP dispatch/combine returns a complete routed result to each
+        # source rank, while the shared expert remains TP-sharded for DP=1.
+        # Reducing their sum would therefore multiply the routed result by EP.
+        if getattr(self.experts, 'ep', 1) > 1:
+            if shared_states is None:
+                return out_states
+            if use_promoted_tp_reduce:
+                out_states = out_states.to(tp_reduce_dtype)
+                shared_states = shared_states.to(tp_reduce_dtype)
+            if self._all_reduce:
+                # moe_tp is one under pure EP, so its process group cannot be
+                # used to reduce the attention/MLP-TP shared expert shards.
+                if self._shared_expert_tp_group is None:
+                    raise RuntimeError(
+                        'EP shared-expert reduction requires an MLP TP process group')
+                dist.all_reduce(
+                    shared_states,
+                    group=self._shared_expert_tp_group,
+                )
+            if use_promoted_tp_reduce:
+                out_states += shared_states
+                return out_states.to(output_dtype)
+            out_states += shared_states
+            return out_states
+
+        if use_promoted_tp_reduce:
+            out_states = out_states.to(tp_reduce_dtype)
+
+        if shared_states is not None:
+            if use_promoted_tp_reduce:
+                shared_states = shared_states.to(tp_reduce_dtype)
+            out_states += shared_states
 
         if self._all_reduce:
-            dist.all_reduce(out_states)
+            if use_promoted_tp_reduce:
+                dist.all_reduce(out_states, group=self.experts.tp_group)
+                out_states = out_states.to(output_dtype)
+            else:
+                dist.all_reduce(out_states)
 
         return out_states
 
@@ -776,7 +939,8 @@ class DeepseekV2MLP(nn.Module):
                  intermediate_size: int = None,
                  dtype: torch.dtype = None,
                  device: torch.device = None,
-                 is_shared_expert: bool = False):
+                 is_shared_expert: bool = False,
+                 prefix: str = ''):
         super().__init__()
         quantization_config = getattr(config, 'quantization_config', None)
         if is_shared_expert:
@@ -806,6 +970,7 @@ class DeepseekV2MLP(nn.Module):
             device=device,
             quant_config=quantization_config,
             is_tp=is_tp,
+            prefix=add_prefix('gate_up_proj', prefix),
         )
 
         # silu and mul
@@ -821,9 +986,12 @@ class DeepseekV2MLP(nn.Module):
             device=device,
             is_tp=is_tp,
             all_reduce=all_reduce,
+            prefix=add_prefix('down_proj', prefix),
         )
 
-    def forward(self, x):
+    def forward(self,
+                x: torch.Tensor,
+                all_routed_experts: torch.Tensor | None = None):
         """forward."""
         gate_up = self.gate_up_proj(x)
         act = self.act_fn(gate_up)
@@ -833,33 +1001,62 @@ class DeepseekV2MLP(nn.Module):
 class DeepseekV2DecoderLayer(nn.Module):
     """Deepseekv2 decoder layer."""
 
-    def __init__(self, config: Any, layer_idx: int, dtype: torch.dtype = None, device: torch.device = None):
+    def __init__(
+        self,
+        config: Any,
+        layer_idx: int,
+        dtype: torch.dtype = None,
+        device: torch.device = None,
+        prefix: str = '',
+    ):
         super().__init__()
         self.layer_idx = layer_idx
         quantization_config = None
 
         # build attention layer
         if getattr(config, 'use_mla', True):
-            self.self_attn = DeepseekV2Attention(config, dtype=dtype, device=device)
+            self.self_attn = DeepseekV2Attention(
+                config,
+                dtype=dtype,
+                device=device,
+                prefix=add_prefix('self_attn', prefix),
+            )
         else:
             # deepseek-vl2-tiny uses MHA LlamaAttention structure
             from lmdeploy.pytorch.models.llama import LlamaAttention
             self.self_attn = LlamaAttention(config, dtype=dtype, device=device)
 
         # mlp
-        self.mlp = (DeepseekV2MoE(config, layer_idx, dtype=dtype, device=device) if
-                    (config.n_routed_experts is not None and layer_idx >= config.first_k_dense_replace
-                     and layer_idx % config.moe_layer_freq == 0) else DeepseekV2MLP(config, dtype=dtype, device=device))
+        self.mlp = (DeepseekV2MoE(
+            config,
+            layer_idx,
+            dtype=dtype,
+            device=device,
+            prefix=add_prefix('mlp', prefix),
+        ) if (config.n_routed_experts is not None and layer_idx >= config.first_k_dense_replace
+              and layer_idx % config.moe_layer_freq == 0) else DeepseekV2MLP(
+                  config,
+                  dtype=dtype,
+                  device=device,
+                  prefix=add_prefix('mlp', prefix),
+              ))
 
         # build input layer norm
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        config.rms_norm_eps,
                                        quant_config=quantization_config,
                                        dtype=dtype,
-                                       device=device)
+                                       device=device,
+                                       prefix=add_prefix('input_layernorm', prefix))
 
         # build attention layer norm
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps, dtype=dtype, device=device)
+        self.post_attention_layernorm = RMSNorm(
+            config.hidden_size,
+            config.rms_norm_eps,
+            dtype=dtype,
+            device=device,
+            prefix=add_prefix('post_attention_layernorm', prefix),
+        )
 
     def forward(
         self,
@@ -868,13 +1065,17 @@ class DeepseekV2DecoderLayer(nn.Module):
         past_key_value: list[torch.FloatTensor] | None,
         residual: torch.Tensor | None = None,
         attn_metadata: Any = None,
-    ) -> tuple[torch.FloatTensor, torch.FloatTensor]:
+        all_routed_experts: torch.Tensor | None = None,
+        capture_input_residual: bool = False,
+    ) -> tuple[Any, ...]:
 
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        input_residual = (residual.clone()
+                          if capture_input_residual else None)
 
         # Self Attention
         hidden_states = self.self_attn(
@@ -886,9 +1087,12 @@ class DeepseekV2DecoderLayer(nn.Module):
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(
+            hidden_states, all_routed_experts=all_routed_experts)
 
         outputs = (hidden_states, residual)
+        if input_residual is not None:
+            outputs += (input_residual, )
         return outputs
 
     def forward_yield(
@@ -963,13 +1167,10 @@ class DeepseekV2DecoderLayer(nn.Module):
         # yield for (+share) comb_wait, (+share) attn0
         yield
         out_hidden_states = out_state['hidden_states'].view(hidden_shape)
-        if shared_states is not None:
-            out_hidden_states += shared_states
-        elif self.mlp.shared_experts is not None:
+        if shared_states is None and self.mlp.shared_experts is not None:
             shared_states = self.mlp.shared_experts(hidden_states)
-            out_hidden_states += shared_states
-        else:
-            pass
+        out_hidden_states = self.mlp._combine_expert_outputs(
+            out_hidden_states, shared_states)
         out_hidden_states = out_hidden_states.reshape(batch_size, sequence_length, -1)
         outputs = (out_hidden_states, residual)
         return outputs
@@ -978,7 +1179,13 @@ class DeepseekV2DecoderLayer(nn.Module):
 class DeepseekV2Model(nn.Module):
     """Mixtral model."""
 
-    def __init__(self, config: Any, dtype: torch.dtype = None, device: torch.device = None):
+    def __init__(
+        self,
+        config: Any,
+        dtype: torch.dtype = None,
+        device: torch.device = None,
+        prefix: str = '',
+    ):
         super().__init__()
         self.config = config
         self.padding_idx = config.pad_token_id
@@ -994,12 +1201,27 @@ class DeepseekV2Model(nn.Module):
             ep_size_, _ = get_ep_world_rank()
             EPLBManager.init_global_eplb_metadata(ep_size_, config.n_routed_experts, config.num_hidden_layers)
         self.layers = nn.ModuleList([
-            DeepseekV2DecoderLayer(config, layer_idx, dtype=dtype, device=device)
+            DeepseekV2DecoderLayer(
+                config,
+                layer_idx,
+                dtype=dtype,
+                device=device,
+                prefix=add_prefix(f'layers.{layer_idx}', prefix),
+            )
             for layer_idx in range(config.num_hidden_layers)
         ])
+        self.aux_hidden_state_layers: tuple[int, ...] = tuple(
+            getattr(config, 'aux_hidden_state_layers', ()) or ())
 
         # build norm
-        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps, quant_config=None, dtype=dtype, device=device)
+        self.norm = RMSNorm(
+            config.hidden_size,
+            config.rms_norm_eps,
+            quant_config=None,
+            dtype=dtype,
+            device=device,
+            prefix=add_prefix('norm', prefix),
+        )
 
         emb_type = RopeType.LinearScaling
         rope_dim = config.qk_rope_head_dim if getattr(config, 'use_mla', True) else (config.hidden_size //
@@ -1019,6 +1241,7 @@ class DeepseekV2Model(nn.Module):
         past_key_values: list[torch.FloatTensor] | None = None,
         attn_metadata: Any = None,
         inputs_embeds: torch.FloatTensor | None = None,
+        all_routed_experts: torch.Tensor | None = None,
     ):
         """forward."""
         if inputs_embeds is None:
@@ -1029,18 +1252,34 @@ class DeepseekV2Model(nn.Module):
         cos, sin = self.rotary_emb(hidden_states, position_ids)
         cos, sin = cos[0], sin[0]
         rotary_pos_emb = (cos, sin)
+        aux_hidden_state_layers = self.aux_hidden_state_layers
+        aux_hidden_states_by_layer: dict[int, torch.Tensor] = {}
         for idx, decoder_layer in enumerate(self.layers):
             past_key_value = past_key_values[idx]
-            hidden_states, residual = decoder_layer(
+            capture_input_residual = idx in aux_hidden_state_layers
+            layer_output = decoder_layer(
                 hidden_states,
                 rotary_pos_emb=rotary_pos_emb,
                 past_key_value=past_key_value,
                 residual=residual,
                 attn_metadata=attn_metadata,
+                all_routed_experts=all_routed_experts,
+                capture_input_residual=capture_input_residual,
             )
+            hidden_states, residual = layer_output[:2]
+            if capture_input_residual:
+                aux_hidden_states_by_layer[idx] = layer_output[2]
 
         hidden_states, _ = self.norm(hidden_states, residual)
-
+        if aux_hidden_state_layers:
+            aux_hidden_states = torch.cat([
+                aux_hidden_states_by_layer[idx]
+                for idx in aux_hidden_state_layers
+            ], dim=-1)
+            return dict(
+                hidden_states=hidden_states,
+                aux_hidden_states=aux_hidden_states,
+            )
         return hidden_states
 
     def forward_microbatch(
@@ -1125,24 +1364,41 @@ class DeepseekV2Model(nn.Module):
 class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
     """Mixture model for causalLM."""
 
+    packed_modules_mapping = {}
+
     def __init__(self,
                  config: Any,
                  ctx_mgr: StepContextManager,
                  dtype: torch.dtype = None,
-                 device: torch.device = None):
+                 device: torch.device = None,
+                 prefix: str = ''):
         super().__init__()
         self.config = config
         self.quantization_config = getattr(config, 'quantization_config', None)
         self.dtype = dtype
         self.ctx_mgr = ctx_mgr
-        self.model = DeepseekV2Model(config, dtype=dtype, device=device)
+        self.model = DeepseekV2Model(
+            config,
+            dtype=dtype,
+            device=device,
+            prefix=add_prefix('model', prefix),
+        )
+        self.packed_modules_mapping = {}
+        if any(getattr(layer.self_attn, 'fuse_qkv_a_proj', False) for layer in self.model.layers):
+            self.packed_modules_mapping['fused_qkv_a_proj_with_mqa'] = [
+                'q_a_proj',
+                'kv_a_proj_with_mqa',
+            ]
         # build lm_head
         self.lm_head = build_rowwise_linear(config.hidden_size,
                                             config.vocab_size,
                                             bias=False,
                                             dtype=dtype,
-                                            device=device)
+                                            device=device,
+                                            prefix=add_prefix('lm_head', prefix))
         self._load_buffers = dict()
+        self.enable_return_routed_experts = (
+            get_build_model_context().enable_return_routed_experts)
 
     def forward(
         self,
@@ -1153,7 +1409,25 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
         inputs_embeds: torch.Tensor = None,
         **kwargs,
     ):
+        aux_hidden_states = None
+        all_routed_experts = None
+        if self.enable_return_routed_experts:
+            num_tokens = (inputs_embeds.size(1)
+                          if inputs_embeds is not None else input_ids.size(1))
+            all_routed_experts = position_ids.new_zeros(
+                (num_tokens, self.config.num_hidden_layers,
+                 self.config.num_experts_per_tok),
+                dtype=torch.uint16,
+            )
         if get_step_ctx_manager().current_context().enable_microbatch:
+            if all_routed_experts is not None:
+                raise RuntimeError(
+                    'DeepseekV2 routed-expert output is not supported with microbatch execution'
+                )
+            if self.model.aux_hidden_state_layers:
+                raise RuntimeError(
+                    'DeepseekV2 auxiliary hidden-state capture is not supported with microbatch execution'
+                )
             hidden_states = self.model.forward_microbatch(
                 input_ids=input_ids,
                 position_ids=position_ids,
@@ -1162,14 +1436,27 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 inputs_embeds=inputs_embeds,
             )
         else:
-            hidden_states = self.model.forward(
+            model_output = self.model.forward(
                 input_ids=input_ids,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 attn_metadata=attn_metadata,
                 inputs_embeds=inputs_embeds,
+                all_routed_experts=all_routed_experts,
             )
-        return hidden_states
+            if isinstance(model_output, dict):
+                hidden_states = model_output['hidden_states']
+                aux_hidden_states = model_output.get('aux_hidden_states')
+            else:
+                hidden_states = model_output
+        if all_routed_experts is None and aux_hidden_states is None:
+            return hidden_states
+        output = {'hidden_states': hidden_states}
+        if aux_hidden_states is not None:
+            output['aux_hidden_states'] = aux_hidden_states
+        if all_routed_experts is not None:
+            output['all_routed_experts'] = all_routed_experts
+        return output
 
     def get_logits(self, hidden_states: torch.Tensor):
         """Compute logits of the model output."""
@@ -1178,6 +1465,23 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
     def get_input_embeddings(self):
         """Get input embeddings."""
         return self.model.get_input_embeddings()
+
+    def get_outputs_cudagraph(self,
+                              output_buffers: dict[str, torch.Tensor],
+                              input_ids: torch.Tensor,
+                              **kwargs):
+        """Preserve auxiliary and routed-expert outputs on graph replay."""
+        num_tokens = input_ids.size(-1)
+        outputs = {
+            'hidden_states': output_buffers['hidden_states'][:, :num_tokens]
+        }
+        if output_buffers.get('aux_hidden_states') is not None:
+            outputs['aux_hidden_states'] = output_buffers[
+                'aux_hidden_states'][:, :num_tokens]
+        if output_buffers.get('all_routed_experts') is not None:
+            outputs['all_routed_experts'] = output_buffers[
+                'all_routed_experts'][:num_tokens, ...].clone()
+        return outputs
 
     def prepare_inputs_for_generation(
         self,
@@ -1201,6 +1505,36 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
     def _load_weight_experts(self, name: str, loaded_weight: torch.Tensor, params_dict: dict[str, nn.Parameter],
                              expert_params_mapping: list):
         """Load weight experts."""
+        match = _COMPRESSED_TENSORS_EXPERT_WEIGHT_RE.fullmatch(name)
+        if match is not None:
+            suffix = match.group('suffix')
+            if suffix in _COMPRESSED_TENSORS_EXPERT_SUFFIXES:
+                projection = match.group('projection')
+                param_group, shard_id = _COMPRESSED_TENSORS_EXPERT_PROJECTIONS[projection]
+                param_name = f"{match.group('prefix')}.{param_group}.{suffix}"
+                try:
+                    param = params_dict[param_name]
+                except KeyError:
+                    raise KeyError(
+                        f'Compressed-tensors expert weight {name!r} resolved to missing parameter {param_name!r}. '
+                        'Check the routed-expert module prefix and quantization configuration.') from None
+                load_weight(
+                    param,
+                    loaded_weight,
+                    expert_id=int(match.group('expert_id')),
+                    shard_id=shard_id,
+                )
+                return
+
+            quantization_config = self.quantization_config
+            quant_method = None
+            if quantization_config is not None:
+                quant_method = quantization_config.get('quant_method')
+            if quant_method == 'compressed-tensors' and suffix.startswith('weight_'):
+                supported = ', '.join(sorted(_COMPRESSED_TENSORS_EXPERT_SUFFIXES))
+                raise ValueError(f'Unsupported compressed-tensors expert weight suffix {suffix!r} in {name!r}; '
+                                 f'supported suffixes are: {supported}.')
+
         for (param_name, weight_name, expert_id, shard_id) in expert_params_mapping:
             if weight_name not in name:
                 continue
@@ -1276,6 +1610,27 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 dtype = params_dict[kc_param_name].dtype
                 weight = __dequant_weight(weight, scale, dtype)
                 __load_kcvc(weight_name, weight)
+
+        fused_a_proj_mapping = (
+            ('q_a_proj', 'q'),
+            ('kv_a_proj_with_mqa', 'kv'),
+        )
+        for source_name, shard_id in fused_a_proj_mapping:
+            source_marker = f'.{source_name}.'
+            if source_marker not in name:
+                continue
+            fused_name = name.replace(source_marker, '.fused_qkv_a_proj_with_mqa.')
+            if fused_name not in params_dict:
+                break
+            weight = loaded_weight
+            if source_name == 'kv_a_proj_with_mqa' and not name.endswith('.weight_scale_inv'):
+                weight = __update_pe(
+                    loaded_weight.to(device),
+                    self.config.kv_lora_rank + self.config.qk_rope_head_dim,
+                    self.config.kv_lora_rank,
+                )
+            load_weight(params_dict[fused_name], weight, shard_id=shard_id)
+            return
 
         for (mod_name, head_dim, pe_dim_offset) in update_pe_mapping:
             if mod_name not in name:
