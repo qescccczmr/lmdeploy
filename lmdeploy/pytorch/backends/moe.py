@@ -174,6 +174,34 @@ class FusedMoEStaticF8Builder(ABC):
 class FusedMoEW4A16Impl(ABC):
     """Compressed-tensors fused MoE W4A16 implementation."""
 
+    runtime_weight_layout = 'checkpoint'
+
+    def process_weights_after_loading(
+        self,
+        weight_packed: torch.Tensor,
+        weight_scale: torch.Tensor,
+    ):
+        """Prepare one projection's weights for the runtime implementation.
+
+        Implementations that require a different runtime layout may return
+        converted tensors.  The owning ``nn.Module`` installs the results
+        while preserving its registered ``nn.Parameter`` objects. Gate/up and
+        down projections are processed separately to bound peak memory.
+        """
+        return weight_packed, weight_scale
+
+    def release_runtime_resources(self) -> None:
+        """Release non-Parameter device buffers owned by the implementation."""
+
+    def validate_weights_after_loading(
+        self,
+        gate_up_packed: torch.Tensor,
+        gate_up_scale: torch.Tensor,
+        down_packed: torch.Tensor,
+        down_scale: torch.Tensor,
+    ) -> None:
+        """Validate both projections before any runtime-layout mutation."""
+
     @abstractmethod
     def forward(
         self,
@@ -201,6 +229,7 @@ class FusedMoEW4A16Builder(ABC):
         num_bits: int = 4,
         group_size: int = 32,
         hidden_dim: int = 1,
+        ffn_dim: int = 1,
         ep_size: int = 1,
         ep_group: dist.ProcessGroup = None,
         out_dtype: torch.dtype = torch.bfloat16,
