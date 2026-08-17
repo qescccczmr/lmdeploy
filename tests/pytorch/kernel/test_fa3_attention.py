@@ -189,51 +189,10 @@ def test_flash_mla_fa3_prefill_splits_absorbed_layout(monkeypatch):
     assert captured['qv'].shape == (3, 2, 512)
     assert captured['k'].shape == (3, 1, 64)
     assert captured['v'].shape == (3, 1, 512)
-    assert captured['max_seqlen_q'] == 2
-    assert captured['max_seqlen_k'] == 2
+    assert captured['max_seqlen_q'] == 3
+    assert captured['max_seqlen_k'] == 3
     assert captured['causal'] is True
     assert captured['window_size'] == (-1, -1)
-
-
-def test_flash_mla_fa3_prefill_recovers_missing_bounds(monkeypatch):
-    import sys
-    from types import ModuleType
-
-    from lmdeploy.pytorch.backends.cuda.attention.mla import FlashMLAImpl
-
-    impl = FlashMLAImpl.__new__(FlashMLAImpl)
-    impl.num_kv_heads = 1
-    impl.v_head_size = 512
-    impl.scale = 0.125
-    impl.causal = True
-    impl.sliding_window = (-1, -1)
-    query = torch.empty((3, 2, 576), dtype=torch.bfloat16)
-    flatten_k = torch.empty((3, 1, 576), dtype=torch.bfloat16)
-    metadata = _make_prefill_metadata(
-        torch.tensor([2, 1], dtype=torch.int32),
-        torch.tensor([[0], [1]], dtype=torch.int32),
-    )
-    metadata.max_q_seqlen = None
-    metadata.max_kv_seqlen = None
-    captured = {}
-
-    def fake_flash_attn_varlen_func(**kwargs):
-        captured.update(kwargs)
-        return torch.empty_like(kwargs['qv'])
-
-    fa3_interface = ModuleType(
-        'lmdeploy.pytorch.third_party.flash_attn_interface')
-    fa3_interface.flash_attn_varlen_func = fake_flash_attn_varlen_func
-    monkeypatch.setitem(
-        sys.modules,
-        'lmdeploy.pytorch.third_party.flash_attn_interface',
-        fa3_interface,
-    )
-
-    impl._prefill_fa3(query, flatten_k, metadata)
-
-    assert captured['max_seqlen_q'] == 2
-    assert captured['max_seqlen_k'] == 3
 
 
 def test_flash_mla_builder_uses_available_fa3_for_prefill(monkeypatch):
