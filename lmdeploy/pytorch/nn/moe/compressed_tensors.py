@@ -119,6 +119,10 @@ class CompressedTensorsMoEWeights(nn.Module):
                            local_ffn_dim // group_size)
             logical_shape = (num_local_experts, 2)
 
+        self.runtime_layout = 'checkpoint'
+        self.checkpoint_packed_shape = packed_shape
+        self.checkpoint_scale_shape = scale_shape
+
         self._register_checkpoint_parameter('weight_packed', packed_shape,
                                             torch.int32, device)
         self._register_checkpoint_parameter('weight_scale', scale_shape,
@@ -219,6 +223,8 @@ class CompressedTensorsMoEWeights(nn.Module):
         local_expert_id = self.expert_map.get(expert_id)
         if local_expert_id is None:
             return
+        if self.runtime_layout != 'checkpoint':
+            self.restore_checkpoint_layout_for_load()
 
         if loaded_weight.dtype != _PART_DTYPES[part]:
             raise ValueError(
@@ -258,6 +264,58 @@ class CompressedTensorsMoEWeights(nn.Module):
                 f'destination={tuple(destination.shape)}')
         destination.copy_(local_weight)
         self._loaded_parts.add(key)
+
+    def restore_checkpoint_layout_for_load(self):
+        """Restore checkpoint tensor shapes before a full online reload.
+
+        Runtime layouts used by optimized kernels preserve the element count
+        of the checkpoint tensors.  Resizing in place therefore retains both
+        the registered ``nn.Parameter`` objects and their backing storage.
+        The checkpoint loader will overwrite the restored views.
+        """
+        if self.runtime_layout == 'checkpoint':
+            return
+        with torch.no_grad():
+            self.weight_packed.resize_(self.checkpoint_packed_shape)
+            self.weight_scale.resize_(self.checkpoint_scale_shape)
+        self.runtime_layout = 'checkpoint'
+        self._loaded_parts.clear()
+
+    def replace_runtime_layout_(
+        self,
+        weight_packed: torch.Tensor,
+        weight_scale: torch.Tensor,
+        layout: str,
+    ):
+        """Install runtime-layout tensors without replacing Parameters."""
+        if layout not in {'checkpoint', 'marlin'}:
+            raise ValueError(f'Unknown W4A16 runtime weight layout: {layout}')
+        expected_packed_numel = self.weight_packed.numel()
+        expected_scale_numel = self.weight_scale.numel()
+        if weight_packed.numel() != expected_packed_numel:
+            raise ValueError(
+                'Runtime packed weight must preserve its checkpoint element '
+                f'count, expected {expected_packed_numel}, got '
+                f'{weight_packed.numel()}')
+        if weight_scale.numel() != expected_scale_numel:
+            raise ValueError(
+                'Runtime scale must preserve its checkpoint element count, '
+                f'expected {expected_scale_numel}, got {weight_scale.numel()}')
+        if (weight_packed.dtype != self.weight_packed.dtype
+                or weight_packed.device != self.weight_packed.device):
+            raise ValueError(
+                'Runtime packed weight must preserve checkpoint dtype/device')
+        if (weight_scale.dtype != self.weight_scale.dtype
+                or weight_scale.device != self.weight_scale.device):
+            raise ValueError(
+                'Runtime scale must preserve checkpoint dtype/device')
+
+        with torch.no_grad():
+            self.weight_packed.resize_(weight_packed.shape)
+            self.weight_packed.copy_(weight_packed)
+            self.weight_scale.resize_(weight_scale.shape)
+            self.weight_scale.copy_(weight_scale)
+        self.runtime_layout = layout
 
     def validate_complete(self):
         """Reject inference unless every local projection triplet was loaded."""
@@ -341,6 +399,8 @@ class FusedMoEW4A16(FusedMoEBase):
         super().__init__(tp=self.tp,
                          tp_mode=self.tp_mode,
                          do_renormalize=renormalize)
+        global_ffn_dim = ffn_dim
+        hidden_dim, local_ffn_dim = update_dims(hidden_dim, ffn_dim)
         impl_builder = get_backend().get_layer_impl_builder(
             OpType.FusedMoEW4A16)
         deep_ep_max_tokens_per_rank = (
@@ -349,6 +409,7 @@ class FusedMoEW4A16(FusedMoEBase):
             top_k=top_k,
             num_experts=num_experts,
             hidden_dim=hidden_dim,
+            ffn_dim=local_ffn_dim,
             ep_size=self.ep,
             ep_group=dist_ctx.ep_gpu_group,
             renormalize=renormalize,
@@ -360,8 +421,6 @@ class FusedMoEW4A16(FusedMoEBase):
             layer_idx=layer_idx,
         )
 
-        global_ffn_dim = ffn_dim
-        hidden_dim, local_ffn_dim = update_dims(hidden_dim, ffn_dim)
         self.gate_up = CompressedTensorsMoEWeights(
             num_experts=num_experts,
             hidden_dim=hidden_dim,
@@ -388,10 +447,51 @@ class FusedMoEW4A16(FusedMoEBase):
         self.dtype = dtype
         self.device = device
 
+    def _apply(self, fn, recurse=True):
+        """Move registered weights and invalidate backend-owned graph scratch."""
+        result = super()._apply(fn, recurse=recurse)
+        self.impl.release_runtime_resources()
+        return result
+
     def update_weights(self):
-        """Finish loading only after every packed expert triplet is present."""
+        """Validate checkpoint tensors and install the backend runtime layout."""
+        target_layout = self.impl.runtime_weight_layout
+        current_layouts = {
+            self.gate_up.runtime_layout,
+            self.down.runtime_layout,
+        }
+        if current_layouts == {target_layout}:
+            # Optimized runtime tensors are immutable between full reloads.
+            # Repeated model-wide post-load hooks must not repack them.
+            if target_layout != 'checkpoint':
+                return
+        elif current_layouts != {'checkpoint'}:
+            raise RuntimeError(
+                'Compressed-tensors MoE projections have mixed runtime '
+                f'layouts {sorted(current_layouts)}. Online weight reload '
+                'must replace every gate/up and down checkpoint tensor.')
+
         self.gate_up.validate_complete()
         self.down.validate_complete()
+        self.impl.validate_weights_after_loading(
+            self.gate_up.weight_packed,
+            self.gate_up.weight_scale,
+            self.down.weight_packed,
+            self.down.weight_scale,
+        )
+        gate_up_packed, gate_up_scale = self.impl.process_weights_after_loading(
+            self.gate_up.weight_packed,
+            self.gate_up.weight_scale,
+        )
+        self.gate_up.replace_runtime_layout_(gate_up_packed, gate_up_scale,
+                                             target_layout)
+        del gate_up_packed, gate_up_scale
+        down_packed, down_scale = self.impl.process_weights_after_loading(
+            self.down.weight_packed,
+            self.down.weight_scale,
+        )
+        self.down.replace_runtime_layout_(down_packed, down_scale,
+                                          target_layout)
 
     def dispatch(self, state: dict):
         """Gather eager default-TP inputs."""

@@ -13,3 +13,7 @@
 # limitations under the License.
 
 add_subdirectory(turbomind)
+
+if(BUILD_MARLIN_MOE_W4A16)
+  add_subdirectory(pytorch/marlin_moe)
+endif()
