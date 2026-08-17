@@ -522,7 +522,7 @@ def _get_sorted_idx_triton(topk_ids: torch.Tensor, num_experts: int):
     _sorted_idx_phase1_kernel[grid](topk_ids, counts, local_pos, N, BLOCK_SIZE=BLOCK_SIZE)
 
     # cumsum to get exp_end
-    exp_end = torch.cumsum(counts, dim=0)
+    exp_end = torch.cumsum(counts, dim=0, dtype=counts.dtype)
 
     # Phase 2: scatter sorted_idx + compute exp_start
     sorted_idx = torch.empty(N, dtype=topk_ids.dtype, device=topk_ids.device)
@@ -560,7 +560,7 @@ def _get_sorted_idx_blocks(topk_ids: torch.Tensor,
     local_pos = torch.empty(num_routes, dtype=flatten_topk_ids.dtype, device=flatten_topk_ids.device)
     _sorted_idx_phase1_kernel[grid](flatten_topk_ids, counts, local_pos, num_routes, BLOCK_SIZE=BLOCK_SIZE)
 
-    exp_end = torch.cumsum(counts, dim=0)
+    exp_end = torch.cumsum(counts, dim=0, dtype=counts.dtype)
 
     sorted_idx = torch.empty(num_routes, dtype=flatten_topk_ids.dtype, device=flatten_topk_ids.device)
     exp_start = torch.empty(num_experts, dtype=flatten_topk_ids.dtype, device=flatten_topk_ids.device)
@@ -573,7 +573,9 @@ def _get_sorted_idx_blocks(topk_ids: torch.Tensor,
 
     local_counts = counts[expert_offset:expert_offset + local_num_experts]
     local_block_counts = torch.div(local_counts + block_m - 1, block_m, rounding_mode='floor')
-    block_end = torch.cumsum(local_block_counts, dim=0)
+    block_end = torch.cumsum(local_block_counts,
+                             dim=0,
+                             dtype=local_block_counts.dtype)
 
     max_blocks = triton.cdiv(num_routes, block_m) + local_num_experts
     block_expert_ids = torch.empty(max_blocks, dtype=flatten_topk_ids.dtype, device=flatten_topk_ids.device)

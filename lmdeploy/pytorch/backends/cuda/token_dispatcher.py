@@ -156,7 +156,7 @@ class DeepEPBuffer:
     @classmethod
     def set_deepep_mode(cls, mode: DeepEPMode):
         low_latency_buffer_cleaned = False
-        if (cls._deepep_mode == DeepEPMode.AUTO and mode == DeepEPMode.LOW_LATENCY
+        if (mode == DeepEPMode.LOW_LATENCY
                 and cls._latest_mode == DeepEPMode.NORMAL):
             cls.clean_low_latency_buffer(cls._buffer_common)
             low_latency_buffer_cleaned = True
@@ -724,7 +724,8 @@ class DeepEPTokenDispatcherLowLatency(TokenDispatcherImpl):
         topk_idx: torch.Tensor,
         topk_weights: torch.Tensor,
         num_experts: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        use_fp8: bool = True,
+    ):
         topk_idx = topk_idx.to(torch.int64)
         expected_m = (hidden_states.shape[0] * self.get_buffer().group_size * topk_idx.shape[1] +
                       num_experts) // num_experts
@@ -734,12 +735,13 @@ class DeepEPTokenDispatcherLowLatency(TokenDispatcherImpl):
             topk_idx,
             self.num_max_dispatch_tokens_per_rank,
             num_experts,
-            use_fp8=True,
+            use_fp8=use_fp8,
             async_finish=not self.return_recv_hook,
             return_recv_hook=self.return_recv_hook,
         ))
         hook() if self.return_recv_hook else event.current_stream_wait()
-        packed_recv_hidden = [DisposibleTensor(x) for x in packed_recv_hidden]
+        packed_recv_hidden = self._wrap_recv_hidden_states(
+            packed_recv_hidden)
         return (
             packed_recv_hidden,
             topk_idx,
@@ -747,6 +749,15 @@ class DeepEPTokenDispatcherLowLatency(TokenDispatcherImpl):
             masked_m,
             expected_m,
         )
+
+    @staticmethod
+    def _wrap_recv_hidden_states(
+        recv_hidden_states: torch.Tensor | tuple[torch.Tensor, ...],
+    ) -> DisposibleTensor | list[DisposibleTensor]:
+        """Preserve DeepEP's BF16 tensor and FP8 tuple contracts."""
+        if isinstance(recv_hidden_states, tuple):
+            return [DisposibleTensor(x) for x in recv_hidden_states]
+        return DisposibleTensor(recv_hidden_states)
 
     def dispatch_async(
         self,
@@ -766,7 +777,8 @@ class DeepEPTokenDispatcherLowLatency(TokenDispatcherImpl):
             async_finish=async_finish,
             return_recv_hook=not async_finish,
         ))
-        recv_hidden_states = [DisposibleTensor(x) for x in recv_hidden_states]
+        recv_hidden_states = self._wrap_recv_hidden_states(
+            recv_hidden_states)
         return recv_hidden_states, recv_expert_count, handle, event, hook
 
     def combine(
