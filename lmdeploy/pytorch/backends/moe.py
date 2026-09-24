@@ -255,7 +255,7 @@ class FusedMoEBlockedF8BuildSpec(BuildSpec[FusedMoEBlockedF8Impl]):
     fp8_dtype: torch.dtype
     num_max_dispatch_tokens_per_rank: int
     layer_idx: int
-    custom_gateup_act: bool
+    act_func: Callable | None
     scale_fmt: str | None
     output_scale: float = 1.0
 

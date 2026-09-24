@@ -189,7 +189,7 @@ class FusedMoEBlockedF8(FusedMoEBase):
                 fp8_dtype=fp8_dtype,
                 num_max_dispatch_tokens_per_rank=build_ctx.deep_ep_max_tokens_per_rank,
                 layer_idx=layer_idx,
-                custom_gateup_act=act_func is not None,
+                act_func=act_func,
                 scale_fmt=scale_fmt,
                 output_scale=output_scale,
             ),
@@ -336,7 +336,8 @@ class FusedMoEBlockedF8(FusedMoEBase):
                 state['recv_hidden_states'] = state['fusedmoe'].fusedmoe_forward(state, self.gate_up.weight,
                                                                                  self.gate_up.weight_scale_inv,
                                                                                  self.down.weight,
-                                                                                 self.down.weight_scale_inv)
+                                                                                 self.down.weight_scale_inv,
+                                                                                 act_func=self.act_func)
             gemm_state = {
                 'fusedmoe': state['fusedmoe'],
                 'hidden_states': state['recv_hidden_states'],
@@ -347,7 +348,8 @@ class FusedMoEBlockedF8(FusedMoEBase):
             state['recv_hidden_states'] = state['fusedmoe'].fusedmoe_forward(state, self.gate_up.weight,
                                                                              self.gate_up.weight_scale_inv,
                                                                              self.down.weight,
-                                                                             self.down.weight_scale_inv)
+                                                                             self.down.weight_scale_inv,
+                                                                                 act_func=self.act_func)
             gemm_state = {
                 'fusedmoe': state['fusedmoe'],
                 'hidden_states': state['recv_hidden_states'],
