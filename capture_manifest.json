@@ -1,0 +1,173 @@
+{
+  "pr": "https://github.com/InternLM/lmdeploy/pull/4968",
+  "lmdeploy_commit": "ec2ec44806c32da8bd5c045bef1fa35fbd7faa00",
+  "vllm_commit": "606d124b377e6462fe0f9076df4d50c88e4dcf48",
+  "perfetto_ui": "https://ui.perfetto.dev/",
+  "perfetto_version": "v58.3-11fbaed83",
+  "config": {
+    "tp": 4,
+    "ep": 1,
+    "dp": 1,
+    "bs": 1,
+    "mtp": 5,
+    "output_tokens": 5,
+    "prefill_chunk": 2048,
+    "max_batch_size": 16,
+    "kv_dtype": "bfloat16",
+    "recurrent_state_dtype": "float32"
+  },
+  "screenshots": [
+    {
+      "engine": "lmdeploy",
+      "input": 2048,
+      "trial": 0,
+      "request_id": "lmdeploy_p2048_trial0",
+      "image": "lmdeploy_2048_decode.png",
+      "image_sha256": "787f722db7c27c0d88bce577002f057227e58845d557721a622112a56c20b7cd",
+      "source_trace_basename": "rank0.json.gz",
+      "source_trace_sha256": "94a1546fefb446a8023b48fd358cd49bc0045b1e5b3bf43c53c4f88aa97a3b43",
+      "client_decode_window_ns": "39486586",
+      "second_target_verification_gpu_span_ns": "13341142",
+      "target_graph_kernel_count": 2760,
+      "target_graph_correlation": 84493,
+      "perfetto_import_stats": [
+        {
+          "name": "slice_spill_overlapping_complete_event",
+          "value": 2819
+        }
+      ],
+      "queries": [
+        [
+          "Target verification GPU span (correlated kernels)",
+          "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7781680262228606 AND ts < 7781680317715192 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+        ],
+        [
+          "CPU native forward / execution scopes",
+          "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7781680262228606 AND ts < 7781680317715192"
+        ],
+        [
+          "GPU native scopes / stream 20",
+          "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7781680262228606 AND ts < 7781680317715192 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=20))"
+        ],
+        [
+          "GPU kernels / stream 20",
+          "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7781680262228606 AND ts < 7781680317715192 AND EXTRACT_ARG(arg_set_id,'args.stream')=20"
+        ]
+      ]
+    },
+    {
+      "engine": "lmdeploy",
+      "input": 8192,
+      "trial": 0,
+      "request_id": "lmdeploy_p8192_trial0",
+      "image": "lmdeploy_8192_decode.png",
+      "image_sha256": "3676ed10e016f3b6982e0293430901b2c2621987c9ad8cbae9ea45fd87e8f09e",
+      "source_trace_basename": "rank0.json.gz",
+      "source_trace_sha256": "94a1546fefb446a8023b48fd358cd49bc0045b1e5b3bf43c53c4f88aa97a3b43",
+      "client_decode_window_ns": "43830927",
+      "second_target_verification_gpu_span_ns": "13589558",
+      "target_graph_kernel_count": 2760,
+      "target_graph_correlation": 523772,
+      "perfetto_import_stats": [
+        {
+          "name": "slice_spill_overlapping_complete_event",
+          "value": 2819
+        }
+      ],
+      "queries": [
+        [
+          "Target verification GPU span (correlated kernels)",
+          "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7781685900672168 AND ts < 7781685960503095 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+        ],
+        [
+          "CPU native forward / execution scopes",
+          "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7781685900672168 AND ts < 7781685960503095"
+        ],
+        [
+          "GPU native scopes / stream 20",
+          "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7781685900672168 AND ts < 7781685960503095 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=20))"
+        ],
+        [
+          "GPU kernels / stream 20",
+          "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7781685900672168 AND ts < 7781685960503095 AND EXTRACT_ARG(arg_set_id,'args.stream')=20"
+        ]
+      ]
+    },
+    {
+      "engine": "vllm",
+      "input": 2048,
+      "trial": 0,
+      "request_id": "vllm_p2048_trial0",
+      "image": "vllm_2048_decode.png",
+      "image_sha256": "ae550edf901c55d40f392c370690a74ec3432acd0b196d816414bf34d76e583f",
+      "source_trace_basename": "dp0_pp0_tp0_dcp0_ep0_rank0.1790749721629273602.pt.trace.json.gz",
+      "source_trace_sha256": "4f034c21365c9c600bcb233193428b9aa6c4c8ed358aae1b568cc7e2927b7097",
+      "client_decode_window_ns": "38573207",
+      "second_target_verification_gpu_span_ns": "8654843",
+      "target_graph_kernel_count": 1596,
+      "target_graph_correlation": 45734,
+      "perfetto_import_stats": [
+        {
+          "name": "slice_spill_overlapping_complete_event",
+          "value": 2380
+        }
+      ],
+      "queries": [
+        [
+          "Target verification GPU span (correlated kernels)",
+          "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7781922817451631 AND ts < 7781922872024838 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+        ],
+        [
+          "CPU native forward / execution scopes",
+          "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7781922817451631 AND ts < 7781922872024838"
+        ],
+        [
+          "GPU native scopes / stream 19",
+          "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7781922817451631 AND ts < 7781922872024838 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=19))"
+        ],
+        [
+          "GPU kernels / stream 19",
+          "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7781922817451631 AND ts < 7781922872024838 AND EXTRACT_ARG(arg_set_id,'args.stream')=19"
+        ]
+      ]
+    },
+    {
+      "engine": "vllm",
+      "input": 8192,
+      "trial": 0,
+      "request_id": "vllm_p8192_trial0",
+      "image": "vllm_8192_decode.png",
+      "image_sha256": "5dd5bb3f6dc9faa950b0c7292de723aadcaac826500b3d64486b59253192b13f",
+      "source_trace_basename": "dp0_pp0_tp0_dcp0_ep0_rank0.1790749721629273602.pt.trace.json.gz",
+      "source_trace_sha256": "4f034c21365c9c600bcb233193428b9aa6c4c8ed358aae1b568cc7e2927b7097",
+      "client_decode_window_ns": "35435070",
+      "second_target_verification_gpu_span_ns": "8671194",
+      "target_graph_kernel_count": 1596,
+      "target_graph_correlation": 266469,
+      "perfetto_import_stats": [
+        {
+          "name": "slice_spill_overlapping_complete_event",
+          "value": 2380
+        }
+      ],
+      "queries": [
+        [
+          "Target verification GPU span (correlated kernels)",
+          "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7781927852407855 AND ts < 7781927903842926 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+        ],
+        [
+          "CPU native forward / execution scopes",
+          "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7781927852407855 AND ts < 7781927903842926"
+        ],
+        [
+          "GPU native scopes / stream 19",
+          "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7781927852407855 AND ts < 7781927903842926 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=19))"
+        ],
+        [
+          "GPU kernels / stream 19",
+          "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7781927852407855 AND ts < 7781927903842926 AND EXTRACT_ARG(arg_set_id,'args.stream')=19"
+        ]
+      ]
+    }
+  ]
+}
