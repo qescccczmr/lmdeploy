@@ -1,0 +1,1336 @@
+{
+  "pr": "https://github.com/InternLM/lmdeploy/pull/4968",
+  "source_commit": "ec2ec44806c32da8bd5c045bef1fa35fbd7faa00",
+  "config": {
+    "lmdeploy_commit": "ec2ec44806c32da8bd5c045bef1fa35fbd7faa00",
+    "vllm_commit": "606d124b377e6462fe0f9076df4d50c88e4dcf48",
+    "accepted_new_optimizations": [],
+    "source_files_changed": 0,
+    "unprofiled": {
+      "lmdeploy": {
+        "2048": {
+          "requests": 30,
+          "wall_seconds": 7.944146444089711,
+          "output_tokens_per_second": 18.881827148541184,
+          "total_tokens_per_second": 7752.8782271910095,
+          "ttft_ms": {
+            "mean": 234.87491589039564,
+            "median": 234.59724616259336,
+            "minimum": 228.657066822052,
+            "maximum": 240.94927497208118
+          },
+          "latency_ms": {
+            "mean": 264.5596698857844,
+            "median": 264.1460131853819,
+            "minimum": 256.0813520103693,
+            "maximum": 273.82497675716877
+          },
+          "tpot_ms": {
+            "mean": 7.421188498847187,
+            "median": 7.278580218553543,
+            "minimum": 6.262143608182669,
+            "maximum": 8.64322017878294
+          },
+          "itl": {
+            "status": "not_per_token_observable",
+            "reason": "SSE events may contain multiple MTP tokens; raw client itl is SSE-event spacing"
+          }
+        },
+        "8192": {
+          "requests": 30,
+          "wall_seconds": 27.702495283447206,
+          "output_tokens_per_second": 5.414674687793485,
+          "total_tokens_per_second": 8876.81768316864,
+          "ttft_ms": {
+            "mean": 894.610288615028,
+            "median": 892.8192933090031,
+            "minimum": 873.4585214406252,
+            "maximum": 915.1794826611876
+          },
+          "latency_ms": {
+            "mean": 923.1040828240415,
+            "median": 921.8324082903564,
+            "minimum": 901.2991366907954,
+            "maximum": 945.8629265427589
+          },
+          "tpot_ms": {
+            "mean": 7.123448552253346,
+            "median": 7.0777180371806026,
+            "minimum": 6.316568003967404,
+            "maximum": 8.028211770579219
+          },
+          "itl": {
+            "status": "not_per_token_observable",
+            "reason": "SSE events may contain multiple MTP tokens; raw client itl is SSE-event spacing"
+          }
+        }
+      },
+      "vllm": {
+        "2048": {
+          "requests": 30,
+          "wall_seconds": 5.05532918125391,
+          "output_tokens_per_second": 29.671658288094783,
+          "total_tokens_per_second": 12183.182893091718,
+          "ttft_ms": {
+            "mean": 139.3094983883202,
+            "median": 138.4463543072343,
+            "minimum": 137.0867546647787,
+            "maximum": 146.50302566587925
+          },
+          "latency_ms": {
+            "mean": 168.35591979324818,
+            "median": 167.48961433768272,
+            "minimum": 166.40386171638966,
+            "maximum": 175.48726592212915
+          },
+          "tpot_ms": {
+            "mean": 7.261605351231992,
+            "median": 7.24349042866379,
+            "minimum": 7.067360682412982,
+            "maximum": 7.435101550072432
+          },
+          "itl": {
+            "status": "not_per_token_observable",
+            "reason": "SSE events may contain multiple MTP tokens; raw client itl is SSE-event spacing"
+          }
+        },
+        "8192": {
+          "requests": 30,
+          "wall_seconds": 17.520758665166795,
+          "output_tokens_per_second": 8.561273108465135,
+          "total_tokens_per_second": 14035.351134017745,
+          "ttft_ms": {
+            "mean": 557.6801260001957,
+            "median": 557.4041241779923,
+            "minimum": 549.1628227755427,
+            "maximum": 570.7151759415865
+          },
+          "latency_ms": {
+            "mean": 583.8712071999907,
+            "median": 582.7936651185155,
+            "minimum": 570.0784809887409,
+            "maximum": 598.0100464075804
+          },
+          "tpot_ms": {
+            "mean": 6.547770299948752,
+            "median": 6.675360607914627,
+            "minimum": 2.92976014316082,
+            "maximum": 10.464736260473728
+          },
+          "itl": {
+            "status": "not_per_token_observable",
+            "reason": "SSE events may contain multiple MTP tokens; raw client itl is SSE-event spacing"
+          }
+        }
+      }
+    },
+    "profiled": {
+      "lmdeploy": [
+        {
+          "request_id": "lmdeploy_p2048_trial0",
+          "prompt_tokens": 2048,
+          "trial": 0,
+          "input_sha256": "93ff4fee007c6c92285e1873c63adf5d2ca5c98b1f2e3d37aad5528c3af2c8b2",
+          "output": {
+            "generated_text": "The user has given me",
+            "success": true,
+            "latency": 0.3597438195720315,
+            "output_tokens": 5,
+            "ttft": 0.32001922000199556,
+            "itl": [
+              0.02024467382580042,
+              0.018359936773777008,
+              0.0011199889704585075
+            ],
+            "tpot": 0.0,
+            "prompt_len": 2048,
+            "error": "",
+            "start_time": 5018127.401522455,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 2048,
+            "total_tokens": 2053,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 320.01922000199556,
+            "latency_ms": 359.7438195720315,
+            "tpot_ms": 9.931149892508984
+          },
+          "clock_before": {
+            "monotonic_ns": 5018127401476353,
+            "unix_ns": 1790755294557142240,
+            "uncertainty_ns": 1109.0,
+            "offset_ns": 1785737167155665887
+          },
+          "clock_after": {
+            "monotonic_ns": 5018127761510929,
+            "unix_ns": 1790755294917176366,
+            "uncertainty_ns": 534.0,
+            "offset_ns": 1785737167155665437
+          },
+          "start_unix_ns": 1790755294557188342,
+          "first_unix_ns": 1790755294877207562,
+          "last_unix_ns": 1790755294916932162,
+          "choice_events": [
+            {
+              "unix_ns": 1790755294877207562,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755294,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755294897452236,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755294,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has given"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755294915812173,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755294,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " me"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755294916932162,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755294,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": null
+              }
+            }
+          ]
+        },
+        {
+          "request_id": "lmdeploy_p2048_trial1",
+          "prompt_tokens": 2048,
+          "trial": 1,
+          "input_sha256": "93ff4fee007c6c92285e1873c63adf5d2ca5c98b1f2e3d37aad5528c3af2c8b2",
+          "output": {
+            "generated_text": "The user has given me",
+            "success": true,
+            "latency": 0.3525053896009922,
+            "output_tokens": 5,
+            "ttft": 0.3120217965915799,
+            "itl": [
+              0.017421619035303593,
+              0.021896900609135628,
+              0.0011650733649730682
+            ],
+            "tpot": 0.0,
+            "prompt_len": 2048,
+            "error": "",
+            "start_time": 5018129.764415297,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 2048,
+            "total_tokens": 2053,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 312.0217965915799,
+            "latency_ms": 352.5053896009922,
+            "tpot_ms": 10.120898252353072
+          },
+          "clock_before": {
+            "monotonic_ns": 5018129764374670,
+            "unix_ns": 1790755296920040075,
+            "uncertainty_ns": 482.0,
+            "offset_ns": 1785737167155665405
+          },
+          "clock_after": {
+            "monotonic_ns": 5018130117133042,
+            "unix_ns": 1790755297272798465,
+            "uncertainty_ns": 495.0,
+            "offset_ns": 1785737167155665423
+          },
+          "start_unix_ns": 1790755296920080702,
+          "first_unix_ns": 1790755297232102499,
+          "last_unix_ns": 1790755297272586092,
+          "choice_events": [
+            {
+              "unix_ns": 1790755297232102499,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755296,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755297249524118,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755296,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has given"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755297271421019,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755296,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " me"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755297272586092,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755296,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": null
+              }
+            }
+          ]
+        },
+        {
+          "request_id": "lmdeploy_p8192_trial0",
+          "prompt_tokens": 8192,
+          "trial": 0,
+          "input_sha256": "849ff1246af037d8abd8284b7260678970d03e6ec59b95d73d8f043eb9807598",
+          "output": {
+            "generated_text": "The user has given me",
+            "success": true,
+            "latency": 1.2655371548607945,
+            "output_tokens": 5,
+            "ttft": 1.22473606467247,
+            "itl": [
+              0.015356304123997688,
+              0.024105599150061607,
+              0.0013391869142651558
+            ],
+            "tpot": 0.0,
+            "prompt_len": 8192,
+            "error": "",
+            "start_time": 5018132.155822205,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 8192,
+            "total_tokens": 8197,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 1224.73606467247,
+            "latency_ms": 1265.5371548607945,
+            "tpot_ms": 10.200272547081113
+          },
+          "clock_before": {
+            "monotonic_ns": 5018132155790186,
+            "unix_ns": 1790755299311455604,
+            "uncertainty_ns": 521.5,
+            "offset_ns": 1785737167155665418
+          },
+          "clock_after": {
+            "monotonic_ns": 5018133421563422,
+            "unix_ns": 1790755300577228714,
+            "uncertainty_ns": 413.0,
+            "offset_ns": 1785737167155665292
+          },
+          "start_unix_ns": 1790755299311487623,
+          "first_unix_ns": 1790755300536223688,
+          "last_unix_ns": 1790755300577024778,
+          "choice_events": [
+            {
+              "unix_ns": 1790755300536223688,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755299,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755300551579992,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755299,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has given"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755300575685591,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755299,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " me"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755300577024778,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755299,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": null
+              }
+            }
+          ]
+        },
+        {
+          "request_id": "lmdeploy_p8192_trial1",
+          "prompt_tokens": 8192,
+          "trial": 1,
+          "input_sha256": "849ff1246af037d8abd8284b7260678970d03e6ec59b95d73d8f043eb9807598",
+          "output": {
+            "generated_text": "The user has given me",
+            "success": true,
+            "latency": 1.2556108012795448,
+            "output_tokens": 5,
+            "ttft": 1.229366117157042,
+            "itl": [
+              0.0014913799241185188,
+              0.023519921116530895,
+              0.0012333830818533897
+            ],
+            "tpot": 0.0,
+            "prompt_len": 8192,
+            "error": "",
+            "start_time": 5018135.426490491,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 8192,
+            "total_tokens": 8197,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 1229.366117157042,
+            "latency_ms": 1255.6108012795448,
+            "tpot_ms": 6.561171030625701
+          },
+          "clock_before": {
+            "monotonic_ns": 5018135426455764,
+            "unix_ns": 1790755302582121160,
+            "uncertainty_ns": 475.0,
+            "offset_ns": 1785737167155665396
+          },
+          "clock_after": {
+            "monotonic_ns": 5018136682297006,
+            "unix_ns": 1790755303837962400,
+            "uncertainty_ns": 472.5,
+            "offset_ns": 1785737167155665394
+          },
+          "start_unix_ns": 1790755302582155887,
+          "first_unix_ns": 1790755303811522004,
+          "last_unix_ns": 1790755303837766688,
+          "choice_events": [
+            {
+              "unix_ns": 1790755303811522004,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755302,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755303813013384,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755302,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has given"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755303836533305,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755302,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " me"
+                  }
+                ],
+                "usage": null
+              }
+            },
+            {
+              "unix_ns": 1790755303837766688,
+              "data": {
+                "id": "-1",
+                "object": "text_completion",
+                "created": 1790755302,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": null
+              }
+            }
+          ]
+        }
+      ],
+      "vllm": [
+        {
+          "request_id": "vllm_p2048_trial0",
+          "prompt_tokens": 2048,
+          "trial": 0,
+          "input_sha256": "93ff4fee007c6c92285e1873c63adf5d2ca5c98b1f2e3d37aad5528c3af2c8b2",
+          "output": {
+            "generated_text": "The user has given me",
+            "success": true,
+            "latency": 0.2247274899855256,
+            "output_tokens": 5,
+            "ttft": 0.18648088444024324,
+            "itl": [
+              0.017976507544517517,
+              0.020270098000764847
+            ],
+            "tpot": 0.0,
+            "prompt_len": 2048,
+            "error": "",
+            "start_time": 5018373.766198217,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 2048,
+            "total_tokens": 2053,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 186.48088444024324,
+            "latency_ms": 224.7274899855256,
+            "tpot_ms": 9.561651386320591
+          },
+          "clock_before": {
+            "monotonic_ns": 5018373766130485,
+            "unix_ns": 1790755540921795946,
+            "uncertainty_ns": 673.0,
+            "offset_ns": 1785737167155665461
+          },
+          "clock_after": {
+            "monotonic_ns": 5018373991014007,
+            "unix_ns": 1790755541146679205,
+            "uncertainty_ns": 399.5,
+            "offset_ns": 1785737167155665198
+          },
+          "start_unix_ns": 1790755540921863678,
+          "first_unix_ns": 1790755541108344562,
+          "last_unix_ns": 1790755541146591168,
+          "choice_events": [
+            {
+              "unix_ns": 1790755541108344562,
+              "data": {
+                "id": "cmpl-vllm_p2048_trial0",
+                "object": "text_completion",
+                "created": 1790755540,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The",
+                    "logprobs": null,
+                    "finish_reason": null,
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            },
+            {
+              "unix_ns": 1790755541126321070,
+              "data": {
+                "id": "cmpl-vllm_p2048_trial0",
+                "object": "text_completion",
+                "created": 1790755540,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has given",
+                    "logprobs": null,
+                    "finish_reason": null,
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            },
+            {
+              "unix_ns": 1790755541146591168,
+              "data": {
+                "id": "cmpl-vllm_p2048_trial0",
+                "object": "text_completion",
+                "created": 1790755540,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " me",
+                    "logprobs": null,
+                    "finish_reason": "length",
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "request_id": "vllm_p2048_trial1",
+          "prompt_tokens": 2048,
+          "trial": 1,
+          "input_sha256": "93ff4fee007c6c92285e1873c63adf5d2ca5c98b1f2e3d37aad5528c3af2c8b2",
+          "output": {
+            "generated_text": "The user has given me",
+            "success": true,
+            "latency": 0.22607300989329815,
+            "output_tokens": 5,
+            "ttft": 0.18445432372391224,
+            "itl": [
+              0.0200356962159276,
+              0.02158298995345831
+            ],
+            "tpot": 0.0,
+            "prompt_len": 2048,
+            "error": "",
+            "start_time": 5018375.99562738,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 2048,
+            "total_tokens": 2053,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 184.45432372391224,
+            "latency_ms": 226.07300989329815,
+            "tpot_ms": 10.404671542346478
+          },
+          "clock_before": {
+            "monotonic_ns": 5018375995590299,
+            "unix_ns": 1790755543151255665,
+            "uncertainty_ns": 471.5,
+            "offset_ns": 1785737167155665366
+          },
+          "clock_after": {
+            "monotonic_ns": 5018376221762054,
+            "unix_ns": 1790755543377427256,
+            "uncertainty_ns": 272.5,
+            "offset_ns": 1785737167155665202
+          },
+          "start_unix_ns": 1790755543151292746,
+          "first_unix_ns": 1790755543335747070,
+          "last_unix_ns": 1790755543377365756,
+          "choice_events": [
+            {
+              "unix_ns": 1790755543335747070,
+              "data": {
+                "id": "cmpl-vllm_p2048_trial1",
+                "object": "text_completion",
+                "created": 1790755543,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The",
+                    "logprobs": null,
+                    "finish_reason": null,
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            },
+            {
+              "unix_ns": 1790755543355782766,
+              "data": {
+                "id": "cmpl-vllm_p2048_trial1",
+                "object": "text_completion",
+                "created": 1790755543,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has given",
+                    "logprobs": null,
+                    "finish_reason": null,
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            },
+            {
+              "unix_ns": 1790755543377365756,
+              "data": {
+                "id": "cmpl-vllm_p2048_trial1",
+                "object": "text_completion",
+                "created": 1790755543,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " me",
+                    "logprobs": null,
+                    "finish_reason": "length",
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "request_id": "vllm_p8192_trial0",
+          "prompt_tokens": 8192,
+          "trial": 0,
+          "input_sha256": "849ff1246af037d8abd8284b7260678970d03e6ec59b95d73d8f043eb9807598",
+          "output": {
+            "generated_text": "The user has provided a",
+            "success": true,
+            "latency": 0.7641353029757738,
+            "output_tokens": 5,
+            "ttft": 0.7271477440372109,
+            "itl": [
+              0.016805130057036877,
+              0.020182428881525993
+            ],
+            "tpot": 0.0,
+            "prompt_len": 8192,
+            "error": "",
+            "start_time": 5018378.26045593,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 8192,
+            "total_tokens": 8197,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 727.1477440372109,
+            "latency_ms": 764.1353029757738,
+            "tpot_ms": 9.246889734640718
+          },
+          "clock_before": {
+            "monotonic_ns": 5018378260427302,
+            "unix_ns": 1790755545416092551,
+            "uncertainty_ns": 493.0,
+            "offset_ns": 1785737167155665249
+          },
+          "clock_after": {
+            "monotonic_ns": 5018379024657945,
+            "unix_ns": 1790755546180323165,
+            "uncertainty_ns": 384.0,
+            "offset_ns": 1785737167155665220
+          },
+          "start_unix_ns": 1790755545416121179,
+          "first_unix_ns": 1790755546143268923,
+          "last_unix_ns": 1790755546180256482,
+          "choice_events": [
+            {
+              "unix_ns": 1790755546143268923,
+              "data": {
+                "id": "cmpl-vllm_p8192_trial0",
+                "object": "text_completion",
+                "created": 1790755545,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The",
+                    "logprobs": null,
+                    "finish_reason": null,
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            },
+            {
+              "unix_ns": 1790755546160074053,
+              "data": {
+                "id": "cmpl-vllm_p8192_trial0",
+                "object": "text_completion",
+                "created": 1790755545,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has provided",
+                    "logprobs": null,
+                    "finish_reason": null,
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            },
+            {
+              "unix_ns": 1790755546180256482,
+              "data": {
+                "id": "cmpl-vllm_p8192_trial0",
+                "object": "text_completion",
+                "created": 1790755545,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " a",
+                    "logprobs": null,
+                    "finish_reason": "length",
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "request_id": "vllm_p8192_trial1",
+          "prompt_tokens": 8192,
+          "trial": 1,
+          "input_sha256": "849ff1246af037d8abd8284b7260678970d03e6ec59b95d73d8f043eb9807598",
+          "output": {
+            "generated_text": "The user has provided a",
+            "success": true,
+            "latency": 0.7467946074903011,
+            "output_tokens": 5,
+            "ttft": 0.7285063173621893,
+            "itl": [
+              0.01828829012811184
+            ],
+            "tpot": 0.0,
+            "prompt_len": 8192,
+            "error": "",
+            "start_time": 5018381.030309176,
+            "client_queue_time": 0.0,
+            "input_audio_duration": 0.0,
+            "num_input_sequences": 1
+          },
+          "usage": {
+            "prompt_tokens": 8192,
+            "total_tokens": 8197,
+            "completion_tokens": 5
+          },
+          "metrics": {
+            "ttft_ms": 728.5063173621893,
+            "latency_ms": 746.7946074903011,
+            "tpot_ms": 4.57207253202796
+          },
+          "clock_before": {
+            "monotonic_ns": 5018381030275642,
+            "unix_ns": 1790755548185941099,
+            "uncertainty_ns": 514.0,
+            "offset_ns": 1785737167155665457
+          },
+          "clock_after": {
+            "monotonic_ns": 5018381777165319,
+            "unix_ns": 1790755548932830597,
+            "uncertainty_ns": 340.5,
+            "offset_ns": 1785737167155665278
+          },
+          "start_unix_ns": 1790755548185974633,
+          "first_unix_ns": 1790755548914480950,
+          "last_unix_ns": 1790755548932769240,
+          "choice_events": [
+            {
+              "unix_ns": 1790755548914480950,
+              "data": {
+                "id": "cmpl-vllm_p8192_trial1",
+                "object": "text_completion",
+                "created": 1790755548,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The",
+                    "logprobs": null,
+                    "finish_reason": null,
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            },
+            {
+              "unix_ns": 1790755548932769240,
+              "data": {
+                "id": "cmpl-vllm_p8192_trial1",
+                "object": "text_completion",
+                "created": 1790755548,
+                "model": "glm53",
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " user has provided a",
+                    "logprobs": null,
+                    "finish_reason": "length",
+                    "stop_reason": null,
+                    "prompt_token_ids": null,
+                    "token_ids": null
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "sharegpt_gate_passed": false
+  },
+  "screenshots": [
+    {
+      "engine": "lmdeploy",
+      "input": 2048,
+      "trial": 0,
+      "request_id": "lmdeploy_p2048_trial0",
+      "filename": "lmdeploy_2048_decode.png",
+      "trace": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_lmdeploy_with_client/rank0.json.gz",
+      "source_sha256": "e36f973d90f312827d3555aeae7691ef5b8d0027a73463429723f03b0a043558",
+      "original_source_sha256": "1026ad556e7d401d0a310c63b72415012b5cae8b828b258e562e04f87a2ae2ea",
+      "start_us": 7787506869207.562,
+      "end_us": 7787506924932.162,
+      "target_graph": {
+        "correlation": 84271,
+        "graph_ids": [
+          "14"
+        ],
+        "kernel_count": 2760,
+        "kda_recurrent_kernels": 34,
+        "inferred_role": "target_verify",
+        "role_basis": "34 KDA recurrent kernels: target; 1: draft. Kernel counts, not graph id, identify role.",
+        "cpu_start_from_request_ms": 321.763322265625,
+        "cpu_launch_ms": 4.02339,
+        "gpu_start_from_request_ms": 326.0348203125,
+        "gpu_end_from_request_ms": 339.3798671875,
+        "gpu_span_ms": 13.345046875,
+        "gpu_kernel_union_ms": 11.787203125,
+        "gpu_starts_after_last_response": false,
+        "gpu_extends_after_last_response": false
+      },
+      "metrics": {
+        "ttft_ms": 320.01922000199556,
+        "tpot_ms": 9.931149892508984,
+        "latency_ms": 359.7438195720315
+      },
+      "ui": {
+        "client": {
+          "id": 42600,
+          "ts": "7787506877207562",
+          "dur": "39724601",
+          "track_id": 16,
+          "arg_set_id": 327960
+        },
+        "verified_graph": {
+          "n": 2760,
+          "ts": "7787506883223162",
+          "dur": "13345047"
+        },
+        "stream": 20,
+        "queries": [
+          [
+            "Target verification GPU span (correlated kernels)",
+            "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7787506869207562 AND ts < 7787506924932162 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+          ],
+          [
+            "CPU native forward / execution scopes",
+            "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7787506869207562 AND ts < 7787506924932162"
+          ],
+          [
+            "GPU native scopes / stream 20",
+            "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7787506869207562 AND ts < 7787506924932162 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=20))"
+          ],
+          [
+            "GPU kernels / stream 20",
+            "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7787506869207562 AND ts < 7787506924932162 AND EXTRACT_ARG(arg_set_id,'args.stream')=20"
+          ]
+        ],
+        "stats": [
+          {
+            "name": "slice_spill_overlapping_complete_event",
+            "value": 2585
+          }
+        ],
+        "perfetto_version": "{\"stable\": \"v58.3-11fbaed83\", \"canary\": \"v58.3-5b31d86f2\", \"autopush\": \"v58.3-463208cbc\"}",
+        "source": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_lmdeploy_with_client/rank0.json.gz"
+      },
+      "screenshot": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/pr_update/screenshots/lmdeploy_2048_decode.png"
+    },
+    {
+      "engine": "lmdeploy",
+      "input": 8192,
+      "trial": 0,
+      "request_id": "lmdeploy_p8192_trial0",
+      "filename": "lmdeploy_8192_decode.png",
+      "trace": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_lmdeploy_with_client/rank0.json.gz",
+      "source_sha256": "e36f973d90f312827d3555aeae7691ef5b8d0027a73463429723f03b0a043558",
+      "original_source_sha256": "1026ad556e7d401d0a310c63b72415012b5cae8b828b258e562e04f87a2ae2ea",
+      "start_us": 7787512528223.688,
+      "end_us": 7787512585024.778,
+      "target_graph": {
+        "correlation": 522208,
+        "graph_ids": [
+          "14"
+        ],
+        "kernel_count": 2760,
+        "kda_recurrent_kernels": 34,
+        "inferred_role": "target_verify",
+        "role_basis": "34 KDA recurrent kernels: target; 1: draft. Kernel counts, not graph id, identify role.",
+        "cpu_start_from_request_ms": 1232.4573095703124,
+        "cpu_launch_ms": 3.873762,
+        "gpu_start_from_request_ms": 1233.899984375,
+        "gpu_end_from_request_ms": 1247.4951748046874,
+        "gpu_span_ms": 13.5951904296875,
+        "gpu_kernel_union_ms": 12.076423828125,
+        "gpu_starts_after_last_response": false,
+        "gpu_extends_after_last_response": false
+      },
+      "metrics": {
+        "ttft_ms": 1224.73606467247,
+        "tpot_ms": 10.200272547081113,
+        "latency_ms": 1265.5371548607945
+      },
+      "ui": {
+        "client": {
+          "id": 271589,
+          "ts": "7787512536223688",
+          "dur": "40801090",
+          "track_id": 16,
+          "arg_set_id": 2231055
+        },
+        "verified_graph": {
+          "n": 2760,
+          "ts": "7787512545387607",
+          "dur": "13595191"
+        },
+        "stream": 20,
+        "queries": [
+          [
+            "Target verification GPU span (correlated kernels)",
+            "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7787512528223688 AND ts < 7787512585024778 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+          ],
+          [
+            "CPU native forward / execution scopes",
+            "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7787512528223688 AND ts < 7787512585024778"
+          ],
+          [
+            "GPU native scopes / stream 20",
+            "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name IN ('forward_cudagraph','forward_eager') AND ts >= 7787512528223688 AND ts < 7787512585024778 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=20))"
+          ],
+          [
+            "GPU kernels / stream 20",
+            "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7787512528223688 AND ts < 7787512585024778 AND EXTRACT_ARG(arg_set_id,'args.stream')=20"
+          ]
+        ],
+        "stats": [
+          {
+            "name": "slice_spill_overlapping_complete_event",
+            "value": 2585
+          }
+        ],
+        "perfetto_version": "{\"stable\": \"v58.3-11fbaed83\", \"canary\": \"v58.3-5b31d86f2\", \"autopush\": \"v58.3-463208cbc\"}",
+        "source": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_lmdeploy_with_client/rank0.json.gz"
+      },
+      "screenshot": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/pr_update/screenshots/lmdeploy_8192_decode.png"
+    },
+    {
+      "engine": "vllm",
+      "input": 2048,
+      "trial": 0,
+      "request_id": "vllm_p2048_trial0",
+      "filename": "vllm_2048_decode.png",
+      "trace": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_vllm_with_client/dp0_pp0_tp0_dcp0_ep0_rank0.1790755551941951268.pt.trace.json.gz",
+      "source_sha256": "74f9ae3099743b523fdd8d85da11c113564f9d331194a0cc51ba7ea7f10763d6",
+      "original_source_sha256": "5153798658efa0fe218e9fd067381b32f57414e75152f4528f1972bee6e5c8dc",
+      "start_us": 7787753100344.562,
+      "end_us": 7787753154591.168,
+      "target_graph": {
+        "correlation": 45726,
+        "graph_ids": [
+          "10283"
+        ],
+        "kernel_count": 1596,
+        "kda_recurrent_kernels": 34,
+        "inferred_role": "target_verify",
+        "role_basis": "34 KDA recurrent kernels: target; 1: draft. Kernel counts, not graph id, identify role.",
+        "cpu_start_from_request_ms": 207.4501845703125,
+        "cpu_launch_ms": 2.066578,
+        "gpu_start_from_request_ms": 209.5168447265625,
+        "gpu_end_from_request_ms": 217.954439453125,
+        "gpu_span_ms": 8.4375947265625,
+        "gpu_kernel_union_ms": 8.0288046875,
+        "gpu_starts_after_last_response": false,
+        "gpu_extends_after_last_response": false
+      },
+      "metrics": {
+        "ttft_ms": 186.48088444024324,
+        "tpot_ms": 9.561651386320591,
+        "latency_ms": 224.7274899855256
+      },
+      "ui": {
+        "client": {
+          "id": 23916,
+          "ts": "7787753108344562",
+          "dur": "38246606",
+          "track_id": 13,
+          "arg_set_id": 138919
+        },
+        "verified_graph": {
+          "n": 1596,
+          "ts": "7787753131380522",
+          "dur": "8437595"
+        },
+        "stream": 19,
+        "queries": [
+          [
+            "Target verification GPU span (correlated kernels)",
+            "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7787753100344562 AND ts < 7787753154591168 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+          ],
+          [
+            "CPU native forward / execution scopes",
+            "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7787753100344562 AND ts < 7787753154591168"
+          ],
+          [
+            "GPU native scopes / stream 19",
+            "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7787753100344562 AND ts < 7787753154591168 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=19))"
+          ],
+          [
+            "GPU kernels / stream 19",
+            "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7787753100344562 AND ts < 7787753154591168 AND EXTRACT_ARG(arg_set_id,'args.stream')=19"
+          ]
+        ],
+        "stats": [
+          {
+            "name": "slice_spill_overlapping_complete_event",
+            "value": 2354
+          }
+        ],
+        "perfetto_version": "{\"stable\": \"v58.3-11fbaed83\", \"canary\": \"v58.3-5b31d86f2\", \"autopush\": \"v58.3-463208cbc\"}",
+        "source": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_vllm_with_client/dp0_pp0_tp0_dcp0_ep0_rank0.1790755551941951268.pt.trace.json.gz"
+      },
+      "screenshot": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/pr_update/screenshots/vllm_2048_decode.png"
+    },
+    {
+      "engine": "vllm",
+      "input": 8192,
+      "trial": 0,
+      "request_id": "vllm_p8192_trial0",
+      "filename": "vllm_8192_decode.png",
+      "trace": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_vllm_with_client/dp0_pp0_tp0_dcp0_ep0_rank0.1790755551941951268.pt.trace.json.gz",
+      "source_sha256": "74f9ae3099743b523fdd8d85da11c113564f9d331194a0cc51ba7ea7f10763d6",
+      "original_source_sha256": "5153798658efa0fe218e9fd067381b32f57414e75152f4528f1972bee6e5c8dc",
+      "start_us": 7787758135268.923,
+      "end_us": 7787758188256.482,
+      "target_graph": {
+        "correlation": 266445,
+        "graph_ids": [
+          "10283"
+        ],
+        "kernel_count": 1596,
+        "kda_recurrent_kernels": 34,
+        "inferred_role": "target_verify",
+        "role_basis": "34 KDA recurrent kernels: target; 1: draft. Kernel counts, not graph id, identify role.",
+        "cpu_start_from_request_ms": 747.104724609375,
+        "cpu_launch_ms": 1.901786,
+        "gpu_start_from_request_ms": 749.006751953125,
+        "gpu_end_from_request_ms": 757.454970703125,
+        "gpu_span_ms": 8.44821875,
+        "gpu_kernel_union_ms": 8.037591796875,
+        "gpu_starts_after_last_response": false,
+        "gpu_extends_after_last_response": false
+      },
+      "metrics": {
+        "ttft_ms": 727.1477440372109,
+        "tpot_ms": 9.246889734640718,
+        "latency_ms": 764.1353029757738
+      },
+      "ui": {
+        "client": {
+          "id": 157746,
+          "ts": "7787758143268923",
+          "dur": "36987560",
+          "track_id": 13,
+          "arg_set_id": 1087310
+        },
+        "verified_graph": {
+          "n": 1596,
+          "ts": "7787758165127931",
+          "dur": "8448219"
+        },
+        "stream": 19,
+        "queries": [
+          [
+            "Target verification GPU span (correlated kernels)",
+            "SELECT MIN(ts) ts,MAX(ts+dur)-MIN(ts) dur,printf('Target verify | GPU %.3f ms',(MAX(ts+dur)-MIN(ts))/1e6) name FROM slice WHERE category='kernel' AND ts >= 7787758135268923 AND ts < 7787758188256482 GROUP BY EXTRACT_ARG(arg_set_id,'args.correlation') HAVING SUM(name LIKE '%fused_recurrent_gated_delta_rule%')=34"
+          ],
+          [
+            "CPU native forward / execution scopes",
+            "SELECT ts,dur,name FROM slice WHERE category='user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7787758135268923 AND ts < 7787758188256482"
+          ],
+          [
+            "GPU native scopes / stream 19",
+            "SELECT ts,dur,name FROM slice WHERE category='gpu_user_annotation' AND name LIKE 'execute_context_%' AND ts >= 7787758135268923 AND ts < 7787758188256482 AND track_id IN (SELECT id FROM thread_track WHERE utid IN (SELECT utid FROM thread WHERE tid=19))"
+          ],
+          [
+            "GPU kernels / stream 19",
+            "SELECT ts,dur,name FROM slice WHERE category='kernel' AND ts >= 7787758135268923 AND ts < 7787758188256482 AND EXTRACT_ARG(arg_set_id,'args.stream')=19"
+          ]
+        ],
+        "stats": [
+          {
+            "name": "slice_spill_overlapping_complete_event",
+            "value": 2354
+          }
+        ],
+        "perfetto_version": "{\"stable\": \"v58.3-11fbaed83\", \"canary\": \"v58.3-5b31d86f2\", \"autopush\": \"v58.3-463208cbc\"}",
+        "source": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/torch_vllm_with_client/dp0_pp0_tp0_dcp0_ep0_rank0.1790755551941951268.pt.trace.json.gz"
+      },
+      "screenshot": "/mnt/nvme1n1/ml_research/llmrazor-share/chengqinxiu/glm5.3flash/reports/opt_plan2_20260930/final_compare/pr_update/screenshots/vllm_8192_decode.png"
+    }
+  ]
+}
