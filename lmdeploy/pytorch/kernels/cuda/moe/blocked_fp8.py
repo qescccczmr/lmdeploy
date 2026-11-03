@@ -8,6 +8,8 @@ import triton.language as tl
 
 from ..activation import silu_and_mul
 from ..blocked_gemm_fp8 import quant_fp8
+from .blocked_fp8_activation import silu_and_mul_quant_fp8, silu_quant_options
+from .blocked_fp8_tma import fused_moe_down_tma, prefer_tma_down, supports_tma_down, tma_down_config
 from .fused_moe import _get_sorted_idx, _get_sorted_idx_blocks, _make_intermediate, _renormalize, moe_reduce
 
 
@@ -698,8 +700,15 @@ def fused_moe_blocked_fp8(input: torch.Tensor,
                           act_func: Callable = None,
                           *,
                           output_scale: float = 1.0,
-                          fp32_acc: bool = False) -> torch.Tensor:
-    """Fused moe."""
+                          fp32_acc: bool = False,
+                          scale_fmt: str | None = None,
+                          use_fused_activation: bool | None = None,
+                          use_tma_down: bool | None = None) -> torch.Tensor:
+    """Fused MoE with independent activation-quantization and TMA overrides.
+
+    ``None`` selects measured shapes; ``False`` retains the reference path.
+    Unsupported activations and TMA layouts always retain their existing path.
+    """
     device = input.device
     M = input.size(0)
     E, N, _ = w1.shape
@@ -777,16 +786,39 @@ def fused_moe_blocked_fp8(input: torch.Tensor,
 
     # activate
     intermediate_cache1 = intermediate_cache1.flatten(0, -2)
-    if act_func is None:
-        gate_cache = silu_and_mul(intermediate_cache1)
+    activation_options = silu_quant_options(act_func)
+    # Models can opt a custom activation into post-quant fusion explicitly,
+    # using the same group_size/dtype/scale_fmt contract as quant_fp8.
+    post_quant = getattr(act_func, 'post_quant', None)
+    fuse_activation = (use_fused_activation if use_fused_activation is not None else M > 64)
+    fuse_activation = (fuse_activation and (activation_options is not None or post_quant is not None)
+                       and group_size in (64, 128, 256) and N % (2 * group_size) == 0)
+    if fuse_activation:
+        if post_quant is not None:
+            gate_cache, gate_scale = post_quant(intermediate_cache1, group_size, dtype=input.dtype, scale_fmt=scale_fmt)
+        else:
+            gate_cache, gate_scale = silu_and_mul_quant_fp8(
+                intermediate_cache1, group_size, dtype=input.dtype, scale_fmt=scale_fmt, **activation_options)
     else:
-        gate_cache = act_func(intermediate_cache1)
+        gate_cache = silu_and_mul(intermediate_cache1) if act_func is None else act_func(intermediate_cache1)
+        gate_cache, gate_scale = quant_fp8(gate_cache, group_size, dtype=input.dtype, scale_fmt=scale_fmt)
     del intermediate_cache1
-    gate_cache, gate_scale = quant_fp8(gate_cache, group_size, dtype=input.dtype)
 
     intermediate_cache2 = _make_intermediate((M, topk, w2.shape[1]), dtype=out_dtype, device=device, zeros=not full_exp)
     # down
-    if use_compact_both or use_compact_down:
+    # Keep the existing compact and small-M dispatch outside measured regions.
+    run_tma_down = (prefer_tma_down(M, num_experts, E, topk, w2) if use_tma_down is None else use_tma_down)
+    run_tma_down = run_tma_down and supports_tma_down(
+        gate_cache, gate_scale, w2, w2_scale, intermediate_cache2)
+    if run_tma_down:
+        tma_config = tma_down_config(
+            compact_moe_cfg if use_compact_both or use_compact_down else down_moe_cfg, E, w2.size(2), M)
+        compact_args = (dict(block_end=block_end, block_expert_ids=block_expert_ids, block_offsets=block_offsets)
+                        if use_compact_both or use_compact_down else {})
+        fused_moe_down_tma(gate_cache, gate_scale, w2, w2_scale, intermediate_cache2,
+                           sorted_idx, exp_start, exp_end, num_tokens=M, expert_offset=expert_offset,
+                           bias=w2_bias, **tma_config, **compact_args)
+    elif use_compact_both or use_compact_down:
         fused_moe_blocked_fp8_compact_kernel_launcher(
             gate_cache,
             gate_scale,

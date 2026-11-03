@@ -415,6 +415,7 @@ class TritonFusedMoEBlockedF8Impl(FusedMoEBlockedF8Impl):
                                        num_experts=num_experts,
                                        renormalize=self.renormalize,
                                        act_func=act_func,
+                                       scale_fmt=self.scale_fmt,
                                        output_scale=self.output_scale,
                                        fp32_acc=self.fp32_acc)
         output = output.unflatten(0, input_size[:-1])
